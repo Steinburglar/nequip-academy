@@ -400,10 +400,15 @@ is `nequip/ase/nosehoover.py::NoseHoover` — an NVT thermostat class, not a dri
   GPU-arch-locked.
 - AOTInductor compile needs `module load cuda/12.9.1-fasrc01` (env's pip nvidia headers
   incomplete — `fatal error: crt/host_defines.h`; setting `CPATH` alone is NOT enough).
-- **`nequip-compile --target ase` AOTInductor `.pt2` SEGFAULTS on first `get_potential_energy()`**
-  call — compiles fine, calculator builds fine, crashes at first forward. Suspect export warning
-  `aten._linalg_det.default is missing a c-shim implementation`. UNRESOLVED. Packaged
-  `.nequip.zip` on the SAME model works fine — isolated to the `.pt2` path.
+- **`nequip-compile --target ase` AOTInductor `.pt2` SEGFAULTS** — compiles fine, calculator
+  builds fine. THIS session (CDP model): crashes at first forward (`get_potential_energy()`).
+  Tutorial session (OAM-S model, 2 attempts): crashes IN THE COMPILE ITSELF instead, right after
+  the same warning. Crash POINT is inconsistent across model/attempt — UNRESOLVED, root cause
+  unconfirmed. Suspect export warning `aten._linalg_det.default is missing a c-shim
+  implementation` both times — confirmed `linalg_det` is in no c-shim header in installed torch
+  2.11, and the op is unavoidable (`nequip/nn/grad_output.py:249`, stress volume, every periodic
+  model hits it). Packaged `.nequip.zip` on the SAME model works fine — isolated to the `.pt2`
+  path.
 - `nequip-compile` from a `.ckpt` needs the checkpoint's training data (rebuilds datamodule →
   `FileNotFoundError`); from a `.nequip.zip` package does not.
 - gpu_test node used = A100-SXM4-40GB, compute_cap 8.0.
@@ -425,6 +430,11 @@ fix: adding a strain magnitude left 20/20 `iso` structures bit-identical but cha
 `aniso`; after fix, all 30 bit-identical). Default 0.05 matches old expression's value for the
 default `strain_magnitudes`, so default behaviour unchanged. `testartifacts/rattle_only.yaml`
 sets it explicitly.
+
+**Latent bug, impact unconfirmed — ASE stores lattice vectors as ROWS.** Straining should be
+`cell @ F.T`; `rattle.py` does `F @ cell`. Identical for a CUBIC cell (every base-frame set used
+so far — CsH2PO4 testartifacts, Si `sitraj.xyz` — is cubic), so nothing is observably wrong
+today; diverges for hexagonal/triclinic. Fix if a non-cubic base frame is ever used.
 
 **Hard-won magnitude lesson**: ±10%/5% strain + 0.5 Å displacement pushed frames OOD for the
 teacher, students WORSE than no synthetic data. Halved defaults (±5%/2.5% strain, 0.25 Å
@@ -508,10 +518,55 @@ Two URLs hardcode `Steinburglar/TuneandDistill@main` (the `pip install git+` cel
 the `wget` of `distill.yaml`) — both live in `distill_section.md`, change there +
 regenerate.
 
+**Validated on GPU (job 42612714, `gpu_test`, 8m06s, 2026-08-28)**: packaged-teacher
+config runs end to end. 550 structures sampled in 18 s → 440/55/55 exactly as the config
+predicts, student trained, `TEST RUN END`, `best.ckpt` 997 KB vs teacher 9.9 MB. Student vs
+teacher on held-out: per-atom energy MAE 6.0 meV/atom, forces MAE 0.425 eV/Ang (early-stopped
+epoch 97 of 200, so converged by its own criterion, not truncated). Colab-specific cells
+(install-from-git, `/content` paths) still UNTESTED.
+
+**Compiled teacher REVERTED, do not re-add until a working `.pt2` exists.** Switched to
+`from_compiled_model` + `./finetuned_ase.nequip.pt2`, then reverted on user's call: `nequip-compile
+--mode aotinductor --target ase` SEGFAULTED (core dumped) on BOTH attempts here, in the compile
+itself, right after `aten._linalg_det.default is missing a c-shim implementation, using proxy
+executor as fallback`. Confirmed `linalg_det` is in NO c-shim header in installed torch 2.11;
+the op is real and unavoidable — `nequip/nn/grad_output.py:249` does `torch.linalg.det(cell)` for
+the stress volume, so every periodic model hits it. Both attempts were MIG slices
+(`nvidia_a100_3g.20gb`); the full-A100 control job was cancelled while still PENDING, so
+**MIG-vs-full is still UNTESTED** and the c-shim story remains correlation, not proof.
+`max_epochs: 200` / `max_time: 00:00:30:00` deviate from upstream's 1000 / 3 days — user's call
+to keep, do not "fix" to match upstream.
+
 **Upstream bug, do not inherit:** notebook cell 29 compiles `/content/results/best.ckpt`
 — the FROM-SCRATCH model — and cell 30 plots it as "Fine-tuned model". Real one is
 `/content/results_ft/best.ckpt` (`results_dir: ./results_ft`). Our section uses the
 correct path. Worth reporting upstream.
+
+## Tutorial — open questions (user, 2026-08-28)
+
+1. **Test split measures FIDELITY TO THE TEACHER, not accuracy.** Splitting is per base frame,
+   so val/test structures do come from base frames that fed nothing into train — a real geometric
+   holdout. But every label is the teacher's, so `test0_epoch/*` answers "how well does the
+   student imitate the teacher", and CANNOT be compared against the teacher's own DFT test error.
+   Fix = a final eval on held-out DFT frames. Note both contaminations: all 110 `sitraj.xyz`
+   frames are base frames, AND `config_finetuning.yaml` feeds all 110 to the teacher via
+   `split_dataset` 0.8/0.1/0.1. So a clean benchmark must be carved out BEFORE both the finetune
+   and the sampling. Mentioned in the tutorial text, NOT implemented.
+2. **The Si strain/rattle magnitudes are GUESSES.** +/-5% volumetric, 5% anisotropic, 0.25 Ang
+   were tuned for CsH2PO4 in `../distillation`, not for silicon, and were carried over unchanged.
+   Open question worth answering IN the tutorial, since every user faces it: how do you know the
+   right magnitudes? Candidate diagnostics, none implemented — compare generated min interatomic
+   distance against the source trajectory's; compare rattle displacement against thermal
+   displacement at the trajectory's temperature; compare strain range against the volume
+   fluctuations MD actually visits; teacher-ensemble disagreement as an OOD flag. The one hard
+   datum stays the CDP result: too wide made students WORSE than no synthetic data at all.
+3. Rattle recipe for the tutorial is exactly `rattle.py`'s, not Si-tuned — see "Rattle prior
+   art" section above for the algorithm and the cubic-only `F @ cell` latent bug (applies here
+   too, `sitraj.xyz` is cubic so it's silent).
+4. **Missing section: compile + compare FM vs toy vs student, on accuracy AND speed.** This is
+   what makes the point land, and it is the payoff the section currently only asserts. Needs (1)'s
+   DFT holdout for the accuracy half, and a working compile for the speed half — see the segfault
+   above.
 
 ## Run commands
 
