@@ -27,9 +27,8 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from .sampler import Sampler
 from .split import assign_splits
 
-
 def frame_key(atoms: Atoms) -> str:
-    """Content hash of a structure, used as its stable identity.
+    """Content hash of a single structure, used as its stable identity.
 
     Stable under reordering the base-frame file, so adding or reordering base frames
     never renames the existing ones.
@@ -129,9 +128,13 @@ class RattleSampler(Sampler):
         self.n_steps = 0
         self.base_frame_keys = [frame_key(a) for a in self.base_frames]
 
-        # A variant is identified by its label, not its position in this list, so
-        # adding a strain magnitude does not renumber the anisotropic variants and
-        # change structures that already exist.
+        # Variant labels are part of the scientific identity of a synthetic structure.
+        # They enter the RNG seed so extending the strain grid later does not redraw
+        # structures that already had a label. For example, adding a new isotropic
+        # strain point before the anisotropic variants must not change the random
+        # strain/displacement used for "aniso:0"; otherwise a resumed or extended
+        # dataset would contain structures whose names match old ones but whose
+        # sampling distribution changed.
         self.variants = [f"iso:{s}" for s in self.strain_magnitudes]
         self.variants += [f"aniso:{i}" for i in range(self.n_random_strain_samples)]
         if not self.variants:

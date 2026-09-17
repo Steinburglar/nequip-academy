@@ -162,9 +162,8 @@ cython_debug/
 # agent resume pointer (session-local)
 HANDOFF.md
 
-# sandbox binaries and generated frames
-testartifacts/inputs/
-testartifacts/out/
+# local playground, not shipped
+sandbox/
 
 # scratch script for the curiosity cluster, not part of the repo
 curiosity_distill.sbatch

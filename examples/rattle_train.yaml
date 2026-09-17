@@ -4,7 +4,7 @@
 # Paths are relative to the directory the command is launched from (hydra does not
 # chdir), so run this from the repository root:
 #
-#   nequip-distill -cp $PWD/testartifacts -cn rattle_train
+#   nequip-distill -cp $PWD/examples -cn rattle_train
 #
 # Checkpoints and logs land in this command's hydra output directory, via
 # ${hydra:runtime.output_dir} below -- nequip's own convention. The dataset does
@@ -14,9 +14,9 @@ run: [sample, train, val, test]
 
 # where the generated, teacher-labeled structures are written. Delete this
 # directory to sample from scratch; leave it and the sampler continues it.
-sample_path: testartifacts/out/rattle_train_dataset
+sample_path: sandbox/out/rattle_train_dataset
 
-ckpt_path: /n/home12/lsteinberger/code/TuneandDistill/outputs/2026-08-28/11-53-40/last.ckpt
+ckpt_path: null
 
 # ------------------------------------------------------------------- sampling
 
@@ -29,13 +29,13 @@ sampler:
   # this environment, and `--mode torchscript` is refused outright by torch >= 2.10.
   calculator:
     _target_: nequip.integrations.ase.NequIPCalculator._from_saved_model
-    model_path: testartifacts/inputs/teacher.nequip.zip
+    model_path: sandbox/inputs/teacher.nequip.zip
     device: cuda
     chemical_species_to_atom_type_map: true
 
   # 10 CsH2PO4 frames, real DFT data from ../distillation/results/CDP/dft_subset/.
   # They carry DFT energies and forces; those are discarded, the teacher relabels.
-  base_frames: testartifacts/inputs/base_frames.xyz
+  base_frames: sandbox/inputs/base_frames.xyz
 
   # 10 base frames x 5 variants = 50 structures. The split is assigned per BASE
   # FRAME, not per structure: the 5 structures rattled from one base frame are

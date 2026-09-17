@@ -2,7 +2,6 @@
 
 from .md import MDSampler
 from .rattle import RattleSampler
-from .sampler import Sampler, split_file
-from .split import SPLITS
+from .sampler import SPLITS, Sampler, split_file
 
 __all__ = ["MDSampler", "RattleSampler", "SPLITS", "Sampler", "split_file"]

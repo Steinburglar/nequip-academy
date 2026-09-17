@@ -32,8 +32,14 @@ version = {attr = "nequip_extension_template._version.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The suite is deliberately CPU-only and teacher-free -- see tests/test_resume.py.
-addopts = "-q"
+# The suite is deliberately CPU-only and teacher-free. E2E tests exercise
+# nequip-distill as a subprocess with a Lennard-Jones teacher and are opt-in.
+addopts = "-q -m 'not e2e'"
+markers = [
+    "integration: tests that exercise multiple project components",
+    "e2e: subprocess tests of user-facing workflows",
+    "slow: tests that take more than a few seconds",
+]
 
 [tool.ruff]
 line-length = 88

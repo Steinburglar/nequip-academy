@@ -6,7 +6,7 @@ structures there are, what a step consists of, when it is finished, and which sp
 a structure belongs to -- belongs to the procedure, so it belongs to the subclass.
 
 The base class knows only that the dataset is split three ways and where each part
-is written. It does not decide what goes where: see :mod:`.split`.
+is written. It does not decide what goes where; concrete samplers do.
 
 :meth:`Sampler.step` does the whole job for one step: produce the next structure or
 structures, label them, append them to the dataset, and advance the procedure's own
@@ -43,10 +43,9 @@ import torch
 from ase import Atoms
 from ase.io import read, write
 
-from .split import SPLITS
-
 logger = logging.getLogger(__name__)
 
+SPLITS = ("train", "val", "test")
 STATE_FILE = "sampler_state.pt"
 STATE_VERSION = 1
 
@@ -54,10 +53,9 @@ STATE_VERSION = 1
 def split_file(sample_path: Union[str, Path], split: str) -> Path:
     """Where the structures of one split live inside a ``sample_path``.
 
-    A free function as well as a :class:`Sampler` method, because the
-    ``nequip-distill`` script needs these paths in runs that do no sampling at all
-    -- there is no sampler to ask, and building one would load the teacher onto a
-    GPU for nothing.
+    This is a free function because `nequip-distill` needs dataset paths even when a
+    run has no `sample` stage and therefore should not build a sampler or load the
+    teacher.
     """
     if split not in SPLITS:
         raise ValueError(f"unknown split {split!r}, expected one of {list(SPLITS)}")
@@ -65,13 +63,7 @@ def split_file(sample_path: Union[str, Path], split: str) -> Path:
 
 
 def frames_digest(frames: Sequence[Atoms]) -> str:
-    """One hash over the structures a sampler actually loaded.
-
-    The config names the base frames by *path*, so a config-to-config comparison sees
-    nothing when the file behind that path is edited. This is what notices. It hashes
-    the loaded structures rather than the file's bytes, so re-exporting the same
-    frames in a different text layout is not reported as a change.
-    """
+    """Return one content hash for a sequence of loaded structures."""
     h = hashlib.sha256()
     for atoms in frames:
         numbers = atoms.get_atomic_numbers()
@@ -83,9 +75,9 @@ def frames_digest(frames: Sequence[Atoms]) -> str:
 
 
 def flatten(value, prefix: str = "") -> dict:
-    """Nested config dict -> flat ``{"calculator.device": "cuda"}`` form.
+    """Nested config dict -> flat, e.g ``{"calculator.device": "cuda"}`` form.
 
-    Only so that a difference can be reported as one short line per setting instead
+    Only so that a diff can be reported as one short line per setting instead
     of two whole config dumps to eyeball.
     """
     if isinstance(value, dict) and value:
@@ -97,23 +89,21 @@ def flatten(value, prefix: str = "") -> dict:
 
 
 class Sampler:
-    """Generate teacher-labeled structures into ``sample_path``.
+    """Generates teacher-labeled structures into ``sample_path``.
 
     Parameters
     ----------
     calculator
         The teacher, as an ASE calculator.
     base_frames
-        Path to a file ASE can read, holding the structures the procedure starts
-        from. These may carry labels of their own (the CDP frames carry DFT energies
-        and forces); those labels are not used and do not reach the output.
+        Path to a file ASE can read, holding the structure(s) the procedure starts
+        from. These may carry labels of their own; those labels are not used and do not reach the output.
     sample_path
         Output directory. Passed in by the ``nequip-distill`` script from the
         top-level ``sample_path`` config key, not from the ``sampler`` section.
     state_interval
         How many structures to append between writes of the progress record. The
-        default writes after every structure: a teacher evaluation costs far more
-        than this record does, so there is little reason to risk repeating one.
+        default writes after every structure.
     """
 
     def __init__(
@@ -146,21 +136,11 @@ class Sampler:
     @property
     def finished(self) -> bool:
         """Whether the procedure has nothing left to do. Defined by the subclass.
-
-        There is no `sample_size` on the base class on purpose: a rattle procedure is
-        naturally bounded by its base frames and variants, an MD procedure by a step
-        count and a sampling interval. Forcing both through one number would misstate
-        at least one of them.
         """
         raise NotImplementedError
 
     def step(self) -> None:
-        """Produce, label, and append the next structure(s), and advance state.
-
-        Implemented by subclasses, including how the teacher labels are obtained --
-        a static procedure calls the calculator on each structure, MD gets energy and
-        forces from the dynamics it is already running -- and which split each
-        structure belongs to. Use :meth:`append` to write to the dataset.
+        """Produce, label, and append the next structure(s), and advance state. Defined by the subclass.
         """
         raise NotImplementedError
 
@@ -168,11 +148,9 @@ class Sampler:
         """Whatever this procedure needs to pick up where it stopped.
 
         Plain numbers, strings, dicts and arrays only -- never the sampler itself and
-        never the calculator. A compiled, CUDA-bound teacher does not survive being
-        moved to another node or another GPU, and a pickled sampler would carry the
-        old config with it, which is the opposite of what a resume should do.
-
-        Empty by default, for a procedure that needs nothing beyond the counters.
+        never the calculator. 
+        
+        Empty by default, overwritten by subclass. 
         """
         return {}
 
@@ -198,18 +176,6 @@ class Sampler:
     def split_file(self, split: str) -> Path:
         return split_file(self.sample_path, split)
 
-    @property
-    def train_file(self) -> Path:
-        return self.split_file("train")
-
-    @property
-    def val_file(self) -> Path:
-        return self.split_file("val")
-
-    @property
-    def test_file(self) -> Path:
-        return self.split_file("test")
-
     def append(self, atoms: Atoms, split: str) -> None:
         """Append one labeled structure to the named split."""
         path = self.split_file(split)
@@ -224,55 +190,51 @@ class Sampler:
     def state_file(self) -> Path:
         return self.sample_path / STATE_FILE
 
-    def write_state(self) -> None:
-        """Record what has been written, atomically.
-
-        The record holds the counters and, per split file, the **byte offset** of its
-        end -- which is just its length in bytes at this moment. Two reasons for a
-        byte offset rather than a structure count. Appending a structure and writing
-        this record are two operations, so a run killed between them leaves a file
-        holding one more structure than the record knows about; cutting that file
-        back to a recorded length is a single ``truncate`` call, where cutting it back
-        to a recorded structure count would mean parsing the extxyz format from the
-        start to find where that structure begins. This relies on the split files
-        being append-only, which is all :meth:`append` ever does to them.
-
-        The offsets are read from the filesystem rather than tracked as the run goes.
-        ``append`` closes the file each time, so its size on disk is the truth; a
-        counter maintained here could disagree with it.
-
-        Written to a temporary file and moved into place with ``os.replace``, so a
-        kill during the write cannot leave a truncated or half-written record behind
-        -- either the old record is there or the new one is.
-
-        Alongside the progress, the record stores the goal: a copy of the ``sampler``
-        config this run was built from, and a hash of the base frames it loaded. The
-        config is stored rather than a hand-picked list of settings from it, so that a
-        setting cannot be left out of the record by mistake -- everything the user
-        wrote is in there. The hash is there because the config names the base frames
-        by path, and a path says nothing about whether the file behind it changed.
-        """
-        payload = {
+    def goal_state(self) -> dict:
+        """Metadata that defines which run is allowed to continue this dataset."""
+        return {
             "version": STATE_VERSION,
             "sampler_class": f"{type(self).__module__}.{type(self).__qualname__}",
             "goal": {
                 "config": self.sampler_config,
                 "base_frames": frames_digest(self.base_frames),
             },
-            "progress": {
-                "n_written": self.n_written,
-                "split_counts": dict(self.split_counts),
-                "offsets": {
-                    s: (
-                        self.split_file(s).stat().st_size
-                        if self.split_file(s).exists()
-                        else 0
-                    )
-                    for s in SPLITS
-                },
-                "procedure": self.procedure_state(),
-            },
         }
+
+    def split_offsets(self) -> dict:
+        """Byte length of each split file at the moment progress is recorded."""
+        return {
+            split: (
+                self.split_file(split).stat().st_size
+                if self.split_file(split).exists()
+                else 0
+            )
+            for split in SPLITS
+        }
+
+    def progress_state(self) -> dict:
+        """Mutable progress needed to continue after interruption."""
+        return {
+            "n_written": self.n_written,
+            "split_counts": dict(self.split_counts),
+            "offsets": self.split_offsets(),
+            "procedure": self.procedure_state(),
+        }
+
+    def state_payload(self) -> dict:
+        """Full durable state.
+
+        Goal metadata and progress are built separately because they change on
+        different timelines, but they are written to one file so each checkpoint is a
+        single atomic snapshot.
+        """
+        payload = self.goal_state()
+        payload["progress"] = self.progress_state()
+        return payload
+
+    def write_state(self) -> None:
+        """Record the current durable state atomically."""
+        payload = self.state_payload()
         temporary = self.state_file.with_suffix(".pt.tmp")
         torch.save(payload, temporary)
         os.replace(temporary, self.state_file)
@@ -305,11 +267,7 @@ class Sampler:
 
     def check_goal(self, stored_goal: dict) -> None:
         """Refuse to continue a dataset whose settings have since changed.
-
-        Every difference is fatal here, including ones that plainly do not affect the
-        structures -- how often the record is written, which device the teacher runs
-        on. Sorting legal changes from illegal ones is the next piece of work; until
-        it exists, refusing everything is the only answer that cannot be wrong.
+            Future versions should be able to carefully identify settings that ARE allowed to change, but that is not yet implemented.
         """
         if self.sampler_config is None:
             raise ValueError(
@@ -349,9 +307,6 @@ class Sampler:
         record was last written -- the run died between the append and the next
         record write. They are dropped and produced again.
 
-        A file *shorter* than its recorded length, or absent when the record says it
-        has content, means the record and these files are not from the same run.
-        Nothing sensible can be recovered from that, so it stops.
         """
         for split in SPLITS:
             path = self.split_file(split)

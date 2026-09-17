@@ -4,12 +4,12 @@
 # chdir), so run this from the repository root.
 #
 #   python -m nequip_extension_template.scripts.distill \
-#       -cp $PWD/testartifacts -cn rattle_only
+#       -cp $PWD/examples -cn rattle_only
 
 run: [sample]
 
 # where the generated, teacher-labeled structures are written
-sample_path: testartifacts/out/rattle_smoke
+sample_path: sandbox/out/rattle_smoke
 
 sampler:
   _target_: nequip_extension_template.sample.RattleSampler
@@ -20,13 +20,13 @@ sampler:
   # this environment, and `--mode torchscript` is refused outright by torch >= 2.10.
   calculator:
     _target_: nequip.integrations.ase.NequIPCalculator._from_saved_model
-    model_path: testartifacts/inputs/teacher.nequip.zip
+    model_path: sandbox/inputs/teacher.nequip.zip
     device: cuda
     chemical_species_to_atom_type_map: true
 
   # 10 CsH2PO4 frames, real DFT data from ../distillation/results/CDP/dft_subset/.
   # They carry DFT energies and forces; those are discarded, the teacher relabels.
-  base_frames: testartifacts/inputs/base_frames.xyz
+  base_frames: sandbox/inputs/base_frames.xyz
 
   # No `sample_size`: this procedure is defined by its base frames and variants,
   # and runs to completion -- 10 base frames x 5 variants = 50 structures.

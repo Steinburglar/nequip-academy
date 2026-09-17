@@ -1,10 +1,10 @@
 """End-to-end exercise of the `nequip-distill` command.
 
-Not collected by pytest -- the name is deliberate. This runs the real command as a
-subprocess, once per case, and several cases train a student, so it takes minutes
-rather than seconds. Run it by hand:
+This runs the real command as a subprocess, once per case, and several cases
+train a student, so it takes minutes rather than seconds. Run it with pytest:
 
-    python tests/smoke_tests.py [-k <substring>] [--keep]
+    pytest -m e2e
+    pytest tests/e2e/test_distill_cli.py -k <substring>
 
 **No teacher, no GPU.** The calculator is Lennard-Jones on 32-atom argon cells and
 the student is a one-layer model trained for two epochs on the CPU. Nothing here
@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 import yaml
 from ase.build import bulk
 from ase.io import write
@@ -428,6 +429,17 @@ def new_structures_plus_checkpoint_refused(work: Path) -> None:
     grown["ckpt_path"] = str(source.run_dir / "last.ckpt")
     run = Run(work, "trap", grown)
     expect_failure(run, f"added {N_STRUCTURES} structure(s)", "Drop `ckpt_path`")
+
+
+# ---------------------------------------------------------------------- pytest
+
+
+@pytest.mark.e2e
+@pytest.mark.slow
+@pytest.mark.parametrize("case_fn", CASES, ids=lambda fn: fn.__name__)
+def test_distill_cli_case(case_fn, tmp_path):
+    make_base_frames(tmp_path / "base_frames.xyz")
+    case_fn(tmp_path)
 
 
 # ----------------------------------------------------------------------- main

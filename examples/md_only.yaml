@@ -2,22 +2,22 @@
 # rattle_only.yaml -- only the `sampler` block differs, which is the point.
 #
 #   python -m nequip_extension_template.scripts.distill \
-#       -cp $PWD/testartifacts -cn md_only
+#       -cp $PWD/examples -cn md_only
 
 run: [sample]
 
-sample_path: testartifacts/out/md_smoke
+sample_path: sandbox/out/md_smoke
 
 sampler:
   _target_: nequip_extension_template.sample.MDSampler
 
   calculator:
     _target_: nequip.integrations.ase.NequIPCalculator._from_saved_model
-    model_path: testartifacts/inputs/teacher.nequip.zip
+    model_path: sandbox/inputs/teacher.nequip.zip
     device: cuda
     chemical_species_to_atom_type_map: true
 
-  base_frames: testartifacts/inputs/base_frames.xyz
+  base_frames: sandbox/inputs/base_frames.xyz
 
   # One trajectory, started from the FIRST base frame; the rest are ignored.
   # Tiny on purpose -- this is a plumbing test, not a production trajectory. A real

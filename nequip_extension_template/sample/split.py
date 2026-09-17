@@ -32,7 +32,8 @@ from typing import List, Optional
 
 import torch
 
-SPLITS = ("train", "val", "test")
+from .sampler import SPLITS
+
 DEFAULT_SPLIT = {"train": 0.8, "val": 0.1, "test": 0.1}
 
 
