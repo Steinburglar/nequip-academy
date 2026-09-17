@@ -1052,3 +1052,96 @@ Do not rely only on Lightning rank-zero behavior.
 
 Principle: move the public architectural boundary first, then improve restart semantics. Do not
 rewrite all restart logic at the same time as the NequIP integration boundary.
+
+### Handoff after first datamodule slice (2026-09-16)
+
+Implemented and committed:
+- `b02b74c Organize sampler tests and design notes`
+- `9a6f92f Add distillation data module path`
+
+Current implementation state:
+- `nequip_extension_template.data.DistillationDataModule` exists and subclasses NequIP's
+  `ASEDataModule`.
+- It computes split file paths from `data.sample_path` and passes them to `ASEDataModule` as
+  `train_file_path` / `val_file_path` / `test_file_path`.
+- It accepts `data.teacher` and `data.generation`; `data.generation` currently points to the
+  existing sampler classes, e.g. `nequip_extension_template.sample.RattleSampler`.
+- It deliberately requires `_recursive_: false` in configs so Hydra does not eagerly instantiate
+  `data.teacher`.
+- `prepare_data()` materializes all generated frames before NequIP loads datasets/training starts.
+  This is expected behavior for now.
+- Restart/provenance are still owned by the existing sampler state machinery:
+  `sampler_state.pt`, config diff, base-frame digest, byte offsets, truncation, and
+  `restore_progress()`.
+- The datamodule has a no-teacher fast path for already-complete sampled datasets: it instantiates
+  the sampler with `calculator=None`, checks/restores state, and returns without loading the
+  teacher if `sampler.finished` is true.
+- No `data/state.py`, lock file, `generation_state.pt`, teacher artifact hash, dataset
+  fingerprint, or generator/procedure refactor exists yet.
+
+New tracked example:
+- `examples/rattle_train_datamodule.yaml`
+- Primary invocation target is now direct NequIP:
+
+```bash
+cd /n/home12/lsteinberger/code/TuneandDistill
+nequip-train -cp "$PWD/examples" -cn rattle_train_datamodule
+```
+
+Important config detail:
+- `ckpt_path: null` must NOT appear in direct `nequip-train` configs. Unlike `nequip-distill`,
+  NequIP treats the presence of `ckpt_path` as a restart, even when the value is `null`, and then
+  tries to load checkpoint `None`, producing the `NoneType`/`seek` traceback. The tracked
+  datamodule example now omits `ckpt_path` entirely.
+
+Sandbox-local smoke-test setup:
+- An untracked, gitignored local config was copied to:
+
+```text
+sandbox/configs/rattle_train_datamodule_local.yaml
+```
+
+- It differs from the tracked example only by path locality and by omitting `ckpt_path`:
+
+```yaml
+data:
+  sample_path: rattle_train_datamodule_dataset
+  teacher:
+    model_path: ../inputs/teacher.nequip.zip
+  generation:
+    base_frames: ../inputs/base_frames.xyz
+```
+
+- It is intended to be launched from `sandbox/out`, not from repo root:
+
+```bash
+cd /n/home12/lsteinberger/code/TuneandDistill/sandbox/out
+
+PATH="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311/bin:$PATH" \
+CONDA_PREFIX="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311" \
+HYDRA_FULL_ERROR=1 \
+nequip-train \
+  -cp /n/home12/lsteinberger/code/TuneandDistill/sandbox/configs \
+  -cn rattle_train_datamodule_local
+```
+
+Path gotchas established during smoke testing:
+- Hydra `_target_` values are Python import paths and are independent of cwd.
+- Hydra `-cp` must be absolute for `nequip-train`; relative `-cp ../configs` can be interpreted as
+  a package/module path such as `nequip.scripts.configs`.
+- Ordinary file paths in YAML (`model_path`, `base_frames`, `sample_path`) are interpreted relative
+  to the process cwd. The sandbox-local config only works from `sandbox/out`.
+- Running from `sandbox/out` gives default Hydra output under `sandbox/out/outputs/...` and sampled
+  frames under `sandbox/out/rattle_train_datamodule_dataset/`.
+
+Verification already run:
+- `python -m pytest tests/unit/data/test_distillation_datamodule.py -q`
+- `python -m pytest tests/e2e/test_distill_cli.py -k nequip_train_with_distillation_datamodule -m e2e -q`
+- `python -m pytest -q`
+
+Known follow-ups:
+1. The sandbox-local config is intentionally untracked. This is less ideal for version management,
+   but it keeps user-side smoke runs contained in `sandbox/` without baking sandbox paths into the
+   general example.
+2. Next architecture step is not more config work; it is splitting the sampler's two roles:
+   datamodule/state layer owns mechanical persistence, generator owns semantic provenance/progress.
