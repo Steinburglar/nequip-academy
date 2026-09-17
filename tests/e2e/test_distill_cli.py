@@ -182,6 +182,24 @@ def config(run, sample_path, train=True, **extra) -> dict:
     return cfg
 
 
+def datamodule_config(sample_path) -> dict:
+    """Config for the new primary path: plain nequip-train plus custom data."""
+    sampler = sampler_section()
+    teacher = sampler.pop("calculator")
+    cfg = student_sections()
+    cfg["run"] = ["train", "val", "test"]
+    cfg["data"].update(
+        {
+            "_target_": "nequip_extension_template.data.DistillationDataModule",
+            "_recursive_": False,
+            "sample_path": sample_path,
+            "teacher": teacher,
+            "generation": sampler,
+        }
+    )
+    return cfg
+
+
 # --------------------------------------------------------------------- driver
 
 class Run:
@@ -200,6 +218,39 @@ class Run:
                 sys.executable,
                 "-m",
                 "nequip_extension_template.scripts.distill",
+                "-cp",
+                str(config_dir),
+                "-cn",
+                name,
+                f"hydra.run.dir={self.run_dir}",
+            ],
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+        )
+        self.returncode = completed.returncode
+        self.output = completed.stdout + completed.stderr
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+
+class TrainRun:
+    """One direct `nequip-train` invocation."""
+
+    def __init__(self, workdir: Path, name: str, cfg: dict):
+        self.workdir = workdir
+        self.name = name
+        config_dir = workdir / "configs"
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / f"{name}.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+        self.run_dir = workdir / "runs" / name
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "nequip.scripts.train",
                 "-cp",
                 str(config_dir),
                 "-cn",
@@ -349,6 +400,22 @@ def full_pipeline(work: Path) -> None:
     )
     expect_success(run, "TRAIN RUN END", "VAL RUN END", "TEST RUN END")
     assert count_structures(work / "out/full") == N_STRUCTURES
+    for name in ("best.ckpt", "last.ckpt"):
+        assert (run.run_dir / name).exists(), f"{name} missing from {run.run_dir}"
+
+
+@case
+def nequip_train_with_distillation_datamodule(work: Path) -> None:
+    """The new path: NequIP's trainer owns the run, data owns sampling."""
+    run = TrainRun(
+        work,
+        "datamodule_train",
+        datamodule_config("out/datamodule_train"),
+    )
+    expect_success(run, "TRAIN RUN END", "VAL RUN END", "TEST RUN END")
+    sample_path = work / "out/datamodule_train"
+    assert count_structures(sample_path) == N_STRUCTURES
+    assert (sample_path / "sampler_state.pt").exists()
     for name in ("best.ckpt", "last.ckpt"):
         assert (run.run_dir / name).exists(), f"{name} missing from {run.run_dir}"
 
