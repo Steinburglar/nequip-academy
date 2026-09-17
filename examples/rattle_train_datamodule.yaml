@@ -7,10 +7,6 @@
 # files under `data.sample_path`, then NequIP loads them through its normal
 # ASEDataModule machinery.
 
-hydra:
-  run:
-    dir: sandbox/out/hydra/rattle_train_datamodule/${now:%Y-%m-%d_%H-%M-%S}
-
 run: [train, val, test]
 
 ckpt_path: null
