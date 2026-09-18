@@ -26,18 +26,31 @@ to know about byte offsets. They are equally not provenance -- provenance is fix
 the dataset's whole life, while contents change at every checkpoint.
 
 See ``planning.md`` section 11 for the full picture. This module is Phase A: the API
-below is the final shape, but it still serializes to the version-1 ``sampler_state.pt``
-layout so that datasets generated before the refactor keep working. The three-section
-split already exists there, just nested differently and without digests; Phase C bumps
-the format rather than changing this interface.
+below is the final shape, but it still reads and writes the version-1
+``sampler_state.pt`` layout so that datasets generated before the refactor keep
+working. The three-section split already exists there, just nested differently and
+without digests, so :meth:`SampleStore.load_record` and :meth:`SampleStore.save_record`
+translate between the two. Phase C bumps the format and deletes the translation;
+nothing else about this interface changes.
 """
 
+import hashlib
 from pathlib import Path
 from typing import Optional, Union
 
 from ase import Atoms
+from ase.io import write
 
 from nequip_extension_template.data.paths import SPLITS, split_file
+from nequip_extension_template.data.state import (
+    STATE_VERSION,
+    read_state,
+    refuse_existing_split_files_without_state,
+    split_offsets,
+    state_file,
+    truncate_to,
+    write_state,
+)
 
 
 class SampleStore:
@@ -57,39 +70,41 @@ class SampleStore:
     """
 
     def __init__(self, sample_path: Union[str, Path]) -> None:
-        raise NotImplementedError
+        self._sample_path = Path(sample_path)
+        self._n_written = 0
+        self._split_counts = {s: 0 for s in SPLITS}
 
     # ------------------------------------------------------------------- paths
 
     @property
     def sample_path(self) -> Path:
         """The dataset directory."""
-        raise NotImplementedError
+        return self._sample_path
 
     def split_file(self, split: str) -> Path:
         """Where the structures of one split live."""
-        raise NotImplementedError
+        return split_file(self._sample_path, split)
 
     @property
     def record_file(self) -> Path:
         """Where the durable record lives."""
-        raise NotImplementedError
+        return state_file(self._sample_path)
 
     # ---------------------------------------------------------------- counters
 
     @property
     def n_written(self) -> int:
         """Structures this store has appended, or been seeded with by a record."""
-        raise NotImplementedError
+        return self._n_written
 
     @property
     def split_counts(self) -> dict:
         """Per-split structure counts, same basis as :attr:`n_written`."""
-        raise NotImplementedError
+        return dict(self._split_counts)
 
     def offsets(self) -> dict:
         """Current byte length of each split file, zero where the file is absent."""
-        raise NotImplementedError
+        return split_offsets(self._sample_path)
 
     def digests(self) -> dict:
         """Content hash of each split file, ``None`` where the file is absent.
@@ -97,7 +112,13 @@ class SampleStore:
         Not yet compared against anything: the version-1 record does not carry
         digests. Phase C stores these and makes :meth:`reconcile` check them.
         """
-        raise NotImplementedError
+        digested = {}
+        for split in SPLITS:
+            path = self.split_file(split)
+            digested[split] = (
+                hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+            )
+        return digested
 
     # ------------------------------------------------------------------ writing
 
@@ -107,7 +128,11 @@ class SampleStore:
         The only way a structure reaches disk. Generators call this; they never open
         a file themselves.
         """
-        raise NotImplementedError
+        self._sample_path.mkdir(parents=True, exist_ok=True)
+        with open(self.split_file(split), "a") as f:
+            write(f, atoms, format="extxyz")
+        self._n_written += 1
+        self._split_counts[split] += 1
 
     # ------------------------------------------------------------------- record
 
@@ -121,16 +146,60 @@ class SampleStore:
         must not happen before the generator has agreed the provenance matches --
         otherwise a refused run has already mutated this store.
         """
-        raise NotImplementedError
+        stored = read_state(self.record_file)
+        if stored is None:
+            return None
+
+        version = stored.get("version")
+        if version != STATE_VERSION:
+            raise ValueError(
+                f"{self.record_file} is in record format {version!r}, this code "
+                f"writes format {STATE_VERSION}. Resuming across formats is not "
+                "supported -- point `sample_path` somewhere else, or delete it."
+            )
+
+        # Version-1 translation: the class name sits in the header rather than in
+        # provenance, and the stored `progress` carries the byte-level contents
+        # alongside the procedure's own position.
+        progress = stored["progress"]
+        return {
+            "version": version,
+            "provenance": {
+                "generator_class": stored.get("sampler_class"),
+                **stored["goal"],
+            },
+            "contents": {
+                "n_written": int(progress["n_written"]),
+                "split_counts": {s: int(progress["split_counts"][s]) for s in SPLITS},
+                "offsets": dict(progress["offsets"]),
+            },
+            "progress": progress["procedure"],
+        }
 
     def save_record(self, provenance: dict, progress: dict) -> None:
         """Write the record atomically, injecting the ``contents`` section.
 
-        `provenance` and `progress` are the generator's; the store adds the header and
-        the byte-level contents, because only it knows them. One file and one
+        `provenance` and `progress` are the generator's; the store adds the version
+        and the byte-level contents, because only it knows them. One file and one
         ``os.replace`` so the sections cannot tear apart from each other.
         """
-        raise NotImplementedError
+        self._sample_path.mkdir(parents=True, exist_ok=True)
+        write_state(
+            self.record_file,
+            {
+                "version": STATE_VERSION,
+                "sampler_class": provenance.get("generator_class"),
+                "goal": {
+                    k: v for k, v in provenance.items() if k != "generator_class"
+                },
+                "progress": {
+                    "n_written": self._n_written,
+                    "split_counts": dict(self._split_counts),
+                    "offsets": self.offsets(),
+                    "procedure": progress,
+                },
+            },
+        )
 
     # -------------------------------------------------------------- consistency
 
@@ -158,7 +227,9 @@ class SampleStore:
         datamodule's sequencing stays visible in the datamodule, and so this method
         has no hidden dependency on :meth:`load_record` having been called.
         """
-        raise NotImplementedError
+        truncate_to(self._sample_path, contents["offsets"])
+        self._n_written = int(contents["n_written"])
+        self._split_counts = {s: int(contents["split_counts"][s]) for s in SPLITS}
 
     def refuse_orphan_files(self) -> None:
         """Refuse split files that exist with no record beside them.
@@ -166,4 +237,4 @@ class SampleStore:
         Without a record there is no account of what those structures are or what
         produced them, so they can neither be continued nor safely appended to.
         """
-        raise NotImplementedError
+        refuse_existing_split_files_without_state(self._sample_path)
