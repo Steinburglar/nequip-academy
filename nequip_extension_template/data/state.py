@@ -73,30 +73,6 @@ def read_state(path: Union[str, Path]) -> Optional[dict]:
     return torch.load(path, weights_only=False)
 
 
-def check_state_header(
-    state: dict,
-    *,
-    expected_version: int,
-    expected_class: str,
-    sample_path: Union[str, Path],
-) -> None:
-    """Validate state format and generator/sampler class identity."""
-    sample_path = Path(sample_path)
-    version = state.get("version")
-    if version != expected_version:
-        raise ValueError(
-            f"{state_file(sample_path)} is in record format {version!r}, this code "
-            f"writes format {expected_version}. Resuming across formats is not "
-            "supported -- point `sample_path` somewhere else, or delete it."
-        )
-    if state.get("sampler_class") != expected_class:
-        raise ValueError(
-            f"{sample_path} was sampled by {state.get('sampler_class')}, the config "
-            f"asks for {expected_class}. One dataset is the output of one procedure "
-            "-- point `sample_path` somewhere else."
-        )
-
-
 def check_goal(
     stored_goal: dict,
     *,

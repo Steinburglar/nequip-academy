@@ -36,15 +36,14 @@ scratch in small approved steps.
 ## Code map
 
 `nequip_extension_template/sample/`
-- `sampler.py` (429) — base `Sampler`. Holds calculator, `base_frames`, `sample_path`,
-  `n_written`, `n_resumed`, `split_counts`, `state_interval`, `sampler_config`. Abstract surface
-  = `finished` (property) + `step()`. Overridable: `procedure_state()` (default `{}`),
-  `restore_progress(blob)` (default RAISES `NotImplementedError` → a sampler not taught to resume
-  refuses instead of duplicating everything). Concrete: `split_file(s)`, `append(atoms, split)`,
-  `state_file`, `goal_state()`, `progress_state()`, `state_payload()`, `write_state()`,
-  `read_state()`, `check_goal(stored)`, `truncate_to(offsets)`, `generate()`. Module fns:
-  `frames_digest`, `flatten`, `split_file(sample_path, split)` (also exported from
-  `sample/__init__` with `SPLITS` — `distill.py` needs the 3 paths in runs that build no sampler).
+- `sampler.py` (~230) — base `Sampler`. Owns a `SampleStore` (`self.store`) and delegates ALL
+  file/record mechanics to it; holds only calculator, `base_frames`, `state_interval`,
+  `n_resumed`, `sampler_config`. `sample_path`/`n_written`/`split_counts` are read-only
+  properties off the store. Abstract surface = `finished` (property) + `step()`. Overridable:
+  `procedure_state()` (default `{}`), `restore_progress(blob)` (default RAISES
+  `NotImplementedError` → a sampler not taught to resume refuses instead of duplicating
+  everything). Concrete: `append`, `split_file`, `provenance()`, `check_goal(stored, n_written)`,
+  `write_state()`, `resume_from(record)`, `generate()`.
 - `rattle.py` (212) — `RattleSampler`. Owns `label()` (teacher call + `SinglePointCalculator`).
   Resumes: `procedure_state()` = `{"n_steps": ...}`, nothing else — order is variant-major and
   fixed, and the goal must be unchanged, so the count IS the position. Module fns: `frame_key`,
@@ -56,11 +55,18 @@ scratch in small approved steps.
 - `__init__.py` — exports `Sampler`, `RattleSampler`, `MDSampler`.
 
 `nequip_extension_template/data/`
-- `paths.py` — `SPLITS`, `split_file(sample_path, split)`.
-- `state.py` — the physical layer: `STATE_FILE`/`STATE_VERSION`, `frames_digest`, `flatten`,
-  `split_offsets`, atomic `read_state`/`write_state`, `check_state_header`, `check_goal`,
-  `truncate_to`, `refuse_existing_split_files_without_state`. `check_goal` still takes
-  `base_frames` — a semantic leak that Phase B moves to the generator (`planning.md` §11.8).
+- `paths.py` — `SPLITS`, `split_file(sample_path, split)`. **The only home for these** —
+  `sample/` no longer re-exports them.
+- `state.py` — free fns behind the store: `STATE_FILE`/`STATE_VERSION`, `frames_digest`,
+  `flatten`, `split_offsets`, atomic `read_state`/`write_state`, `check_goal`, `truncate_to`,
+  `refuse_existing_split_files_without_state`. `check_goal` still takes `base_frames` — a
+  semantic leak that Phase B moves to the generator (`planning.md` §11.8).
+- `store.py` — `SampleStore`, the physical layer as an object and **the only thing that touches
+  the generated files**. `append` / `offsets` / `digests` / `load_record` / `save_record` /
+  `reconcile(contents)` / `refuse_orphan_files`. Presents the target three-section record shape
+  (`version`/`provenance`/`contents`/`progress`) while reading and writing the v1
+  `sampler_state.pt` layout; Phase C deletes that translation. Creates `sample_path` lazily, so a
+  refused run leaves nothing behind. Its only state is `n_written`/`split_counts`.
 - `datamodule.py` — `DistillationDataModule(ASEDataModule)`. Computes the 3 split paths in
   `__init__` and passes them to `ASEDataModule` before the files exist; `prepare_data()`
   generates. Requires `_recursive_: false` so hydra does not build the teacher eagerly. Sets

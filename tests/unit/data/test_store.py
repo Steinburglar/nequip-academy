@@ -23,15 +23,9 @@ def frame(x: float = 0.0) -> Atoms:
 
 
 def bare_sampler(tmp_path, sample_path):
-    """A `Sampler` built far enough to use its record builders, and nothing more.
-
-    The directory is created here because `Sampler.append` expects `generate()` to
-    have done it already; `SampleStore.append` creates it itself, so that a refused
-    run leaves nothing behind.
-    """
+    """A `Sampler` built far enough to use its record builders, and nothing more."""
     base = tmp_path / "base.xyz"
     write(str(base), [frame()])
-    sample_path.mkdir(parents=True, exist_ok=True)
     sampler = Sampler(calculator=None, base_frames=base, sample_path=sample_path)
     sampler.sampler_config = {"seed": 1, "calculator": {"device": "cpu"}}
     return sampler
@@ -146,23 +140,21 @@ def test_store_reads_a_record_the_sampler_wrote(tmp_path):
     assert record["progress"] == {}
 
 
-def test_sampler_reads_a_record_the_store_wrote(tmp_path):
-    """The direction that lets the two coexist while the call sites are switched."""
+def test_sampler_accepts_a_record_the_store_wrote(tmp_path):
+    """The direction that lets a later run pick up what an earlier one recorded."""
     sample_path = tmp_path / "ds"
-    sampler = bare_sampler(tmp_path, sample_path)
+    written = bare_sampler(tmp_path, sample_path)
+    written.store.append(frame(0.0), "train")
+    written.store.save_record(written.provenance(), {})
 
-    store = SampleStore(sample_path)
-    store.append(frame(0.0), "train")
-    store.save_record(sampler.goal_state()["goal"] | {
-        "generator_class": "nequip_extension_template.sample.sampler.Sampler"
-    }, {})
-
-    state = sampler.read_state()
-    assert state["version"] == STATE_VERSION
-    assert state["sampler_class"] == "nequip_extension_template.sample.sampler.Sampler"
-    sampler.check_goal(state["goal"])
-    assert state["progress"]["n_written"] == 1
-    assert state["progress"]["procedure"] == {}
+    fresh = bare_sampler(tmp_path, sample_path)
+    record = fresh.store.load_record()
+    assert record["provenance"]["generator_class"] == (
+        "nequip_extension_template.sample.sampler.Sampler"
+    )
+    assert record["contents"]["n_written"] == 1
+    # the settings are unchanged, so this is the case that must NOT refuse
+    fresh.check_goal(record["provenance"], record["contents"]["n_written"])
 
 
 # ------------------------------------------------------------- reconciling

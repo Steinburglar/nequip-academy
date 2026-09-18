@@ -9,7 +9,7 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io import read, write
 
 from nequip_extension_template.sample.rattle import RattleSampler
-from nequip_extension_template.sample.sampler import SPLITS
+from nequip_extension_template.data.paths import SPLITS
 
 pytestmark = pytest.mark.filterwarnings("ignore:Length of split at index .*:UserWarning")
 

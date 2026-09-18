@@ -8,8 +8,8 @@ from omegaconf import OmegaConf
 
 import nequip_extension_template.data.datamodule as datamodule_module
 from nequip_extension_template.data import DistillationDataModule
-from nequip_extension_template.sample import SPLITS
-from nequip_extension_template.sample.sampler import STATE_FILE
+from nequip_extension_template.data.paths import SPLITS
+from nequip_extension_template.data.state import STATE_FILE
 
 pytestmark = pytest.mark.filterwarnings("ignore:Length of split at index .*:UserWarning")
 

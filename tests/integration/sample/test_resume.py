@@ -23,7 +23,7 @@ from ase.calculators.lj import LennardJones
 from ase.io import read, write
 
 from nequip_extension_template.sample import MDSampler, RattleSampler
-from nequip_extension_template.sample.sampler import STATE_FILE
+from nequip_extension_template.data.state import STATE_FILE
 
 SPLITS = ("train", "val", "test")
 

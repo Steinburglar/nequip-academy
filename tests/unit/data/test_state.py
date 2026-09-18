@@ -8,7 +8,6 @@ from nequip_extension_template.data.state import (
     STATE_FILE,
     STATE_VERSION,
     check_goal,
-    check_state_header,
     flatten,
     frames_digest,
     read_state,
@@ -62,30 +61,6 @@ def test_write_state_is_atomic_and_read_state_round_trips(tmp_path):
 
 def test_read_state_returns_none_when_absent(tmp_path):
     assert read_state(state_file(tmp_path)) is None
-
-
-def test_check_state_header_refuses_version_mismatch(tmp_path):
-    state = {"version": 999, "sampler_class": "example.Sampler"}
-
-    with pytest.raises(ValueError, match="record format 999"):
-        check_state_header(
-            state,
-            expected_version=STATE_VERSION,
-            expected_class="example.Sampler",
-            sample_path=tmp_path,
-        )
-
-
-def test_check_state_header_refuses_class_mismatch(tmp_path):
-    state = {"version": STATE_VERSION, "sampler_class": "old.Sampler"}
-
-    with pytest.raises(ValueError, match="one procedure"):
-        check_state_header(
-            state,
-            expected_version=STATE_VERSION,
-            expected_class="new.Sampler",
-            sample_path=tmp_path,
-        )
 
 
 def test_check_goal_refuses_config_difference_and_names_it(tmp_path):

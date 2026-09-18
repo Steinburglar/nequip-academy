@@ -39,21 +39,11 @@ from typing import Optional, Union
 from ase import Atoms
 from ase.io import read, write
 
-from nequip_extension_template.data.paths import SPLITS, split_file
 from nequip_extension_template.data.state import (
-    STATE_FILE,
-    STATE_VERSION,
     check_goal as check_stored_goal,
-    check_state_header,
     frames_digest,
-    flatten,
-    read_state as read_state_file,
-    refuse_existing_split_files_without_state,
-    split_offsets,
-    state_file,
-    truncate_to as truncate_split_files_to,
-    write_state as write_state_file,
 )
+from nequip_extension_template.data.store import SampleStore
 
 logger = logging.getLogger(__name__)
 
@@ -85,15 +75,13 @@ class Sampler:
     ):
         self.calculator = calculator
         self.base_frames = read(str(base_frames), index=":")
-        self.sample_path = Path(sample_path)
+        self.store = SampleStore(sample_path)
         self.state_interval = int(state_interval)
         if self.state_interval < 1:
             raise ValueError(
                 f"`state_interval` must be at least 1, got {state_interval!r}"
             )
-        self.n_written = 0
         self.n_resumed = 0
-        self.split_counts = {s: 0 for s in SPLITS}
         # Set by `DistillationDataModule`, which is what has the config. Not a
         # constructor argument: hydra's `instantiate` recurses into the arguments it
         # is handed looking for things to build, and this dict contains the
@@ -143,101 +131,85 @@ class Sampler:
 
     # ----------------------------------------------------------------- dataset files
 
+    @property
+    def sample_path(self) -> Path:
+        return self.store.sample_path
+
+    @property
+    def n_written(self) -> int:
+        return self.store.n_written
+
+    @property
+    def split_counts(self) -> dict:
+        return self.store.split_counts
+
     def split_file(self, split: str) -> Path:
-        return split_file(self.sample_path, split)
+        return self.store.split_file(split)
 
     def append(self, atoms: Atoms, split: str) -> None:
         """Append one labeled structure to the named split."""
-        path = self.split_file(split)
-        with open(path, "a") as f:
-            write(f, atoms, format="extxyz")
-        self.n_written += 1
-        self.split_counts[split] += 1
+        self.store.append(atoms, split)
 
     # ------------------------------------------------------------- progress record
 
-    @property
-    def state_file(self) -> Path:
-        return state_file(self.sample_path)
+    def provenance(self) -> dict:
+        """What defines which run is allowed to continue this dataset.
 
-    def goal_state(self) -> dict:
-        """Metadata that defines which run is allowed to continue this dataset."""
+        Written and checked by the procedure, not by the store: only a procedure
+        knows which of its settings are load-bearing. The class name rides along
+        here rather than in the record header, so that a dataset produced by a
+        different procedure is refused by the same comparison as any other
+        incompatible setting.
+        """
         return {
-            "version": STATE_VERSION,
-            "sampler_class": f"{type(self).__module__}.{type(self).__qualname__}",
-            "goal": {
-                "config": self.sampler_config,
-                "base_frames": frames_digest(self.base_frames),
-            },
+            "generator_class": f"{type(self).__module__}.{type(self).__qualname__}",
+            "config": self.sampler_config,
+            "base_frames": frames_digest(self.base_frames),
         }
 
-    def split_offsets(self) -> dict:
-        """Byte length of each split file at the moment progress is recorded."""
-        return split_offsets(self.sample_path)
-
-    def progress_state(self) -> dict:
-        """Mutable progress needed to continue after interruption."""
-        return {
-            "n_written": self.n_written,
-            "split_counts": dict(self.split_counts),
-            "offsets": self.split_offsets(),
-            "procedure": self.procedure_state(),
-        }
-
-    def state_payload(self) -> dict:
-        """Full durable state.
-
-        Goal metadata and progress are built separately because they change on
-        different timelines, but they are written to one file so each checkpoint is a
-        single atomic snapshot.
-        """
-        payload = self.goal_state()
-        payload["progress"] = self.progress_state()
-        return payload
-
-    def write_state(self) -> None:
-        """Record the current durable state atomically."""
-        write_state_file(self.state_file, self.state_payload())
-
-    def read_state(self) -> Optional[dict]:
-        """Load the record, or ``None`` if there is none. Refuse one we cannot trust.
-
-        ``weights_only=False`` because this is a record of plain python values, not a
-        tensor checkpoint, and nothing writes it but :meth:`write_state`.
-        """
-        state = read_state_file(self.state_file)
-        if state is None:
-            return None
-        live = f"{type(self).__module__}.{type(self).__qualname__}"
-        check_state_header(
-            state,
-            expected_version=STATE_VERSION,
-            expected_class=live,
-            sample_path=self.sample_path,
-        )
-        return state
-
-    def check_goal(self, stored_goal: dict) -> None:
+    def check_goal(self, stored_goal: dict, n_written: int) -> None:
         """Refuse to continue a dataset whose settings have since changed.
-            Future versions should be able to carefully identify settings that ARE allowed to change, but that is not yet implemented.
+
+        Future versions should be able to carefully identify settings that ARE
+        allowed to change, but that is not yet implemented.
+
+        `n_written` comes from the record rather than from the store, because this
+        runs before the store has been reconciled -- the count is only there to say
+        how much is at stake.
         """
+        live = f"{type(self).__module__}.{type(self).__qualname__}"
+        stored_class = stored_goal.get("generator_class")
+        if stored_class != live:
+            raise ValueError(
+                f"{self.sample_path} was sampled by {stored_class}, the config asks "
+                f"for {live}. One dataset is the output of one procedure -- point "
+                "`sample_path` somewhere else."
+            )
         check_stored_goal(
             stored_goal,
             live_config=self.sampler_config,
             base_frames=self.base_frames,
             sample_path=self.sample_path,
-            n_written=self.n_written,
+            n_written=n_written,
         )
 
-    def truncate_to(self, offsets: dict) -> None:
-        """Cut each split file back to the length the record gives for it.
+    def write_state(self) -> None:
+        """Record the current durable state atomically."""
+        self.store.save_record(self.provenance(), self.procedure_state())
 
-        A file *longer* than its recorded length holds structures appended after the
-        record was last written -- the run died between the append and the next
-        record write. They are dropped and produced again.
+    def resume_from(self, record: dict) -> None:
+        """Take up the position a record describes.
 
+        Settings are checked before a byte is touched, so a refused run truncates
+        nothing and leaves the store's counters alone. Only then does the store cut
+        the split files back to their recorded lengths and adopt the counts, and only
+        then is the procedure asked to restore itself -- by which point the dataset is
+        already in the state the record describes.
         """
-        truncate_split_files_to(self.sample_path, offsets)
+        self.check_goal(record["provenance"], record["contents"]["n_written"])
+        self.store.reconcile(record["contents"])
+        self.n_resumed = self.n_written
+        self.restore_progress(record["progress"])
 
     # --------------------------------------------------------------------- main loop
 
@@ -246,22 +218,16 @@ class Sampler:
 
         Returns the number of structures in the dataset, including any that were
         already there before this call. ``n_resumed`` is how many of those predate it.
-        """
-        self.sample_path.mkdir(parents=True, exist_ok=True)
-        state = self.read_state()
 
-        if state is None:
-            refuse_existing_split_files_without_state(self.sample_path)
+        The directory is not created up front: the store makes it when the first
+        structure or record is written, so a run refused below leaves nothing behind.
+        """
+        record = self.store.load_record()
+
+        if record is None:
+            self.store.refuse_orphan_files()
         else:
-            progress = state["progress"]
-            # counters first, so the refusal below can say how much is at stake
-            self.n_written = int(progress["n_written"])
-            self.n_resumed = self.n_written
-            self.split_counts = {s: int(progress["split_counts"][s]) for s in SPLITS}
-            self.check_goal(state["goal"])
-            # before anything trusts the file lengths
-            self.truncate_to(progress["offsets"])
-            self.restore_progress(progress["procedure"])
+            self.resume_from(record)
             counts = ", ".join(f"{s}={n}" for s, n in self.split_counts.items())
             logger.info(
                 f"continuing {self.sample_path}: {self.n_written} structure(s) "

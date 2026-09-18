@@ -11,7 +11,6 @@ from nequip.data.datamodule import ASEDataModule
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nequip_extension_template.data.paths import SPLITS, split_file
-from nequip_extension_template.data.state import refuse_existing_split_files_without_state
 
 logger = logging.getLogger(__name__)
 
@@ -155,21 +154,17 @@ class DistillationDataModule(ASEDataModule):
         The existing sampler owns compatibility checks and procedure restore. Reuse
         those mechanics with ``calculator=None`` so a second student can train on a
         completed dataset without loading the teacher model.
+
+        The directory is not created here: the store makes it when something is
+        actually written, so a run refused below leaves nothing behind.
         """
         sampler = self._instantiate_sampler(sampler_config, load_teacher=False)
-        sampler.sample_path.mkdir(parents=True, exist_ok=True)
-        state = sampler.read_state()
-        if state is None:
-            refuse_existing_split_files_without_state(sampler.sample_path)
+        record = sampler.store.load_record()
+        if record is None:
+            sampler.store.refuse_orphan_files()
             return None
 
-        progress = state["progress"]
-        sampler.n_written = int(progress["n_written"])
-        sampler.n_resumed = sampler.n_written
-        sampler.split_counts = {s: int(progress["split_counts"][s]) for s in SPLITS}
-        sampler.check_goal(state["goal"])
-        sampler.truncate_to(progress["offsets"])
-        sampler.restore_progress(progress["procedure"])
+        sampler.resume_from(record)
         if sampler.finished:
             return sampler
         return None

@@ -3,7 +3,9 @@ import pytest
 from ase import Atoms
 from ase.io import read, write
 
-from nequip_extension_template.sample.sampler import STATE_FILE, SPLITS, Sampler
+from nequip_extension_template.data.paths import SPLITS
+from nequip_extension_template.data.state import STATE_FILE
+from nequip_extension_template.sample.sampler import Sampler
 
 
 class ToySampler(Sampler):
