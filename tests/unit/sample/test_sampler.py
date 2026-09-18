@@ -5,7 +5,7 @@ from ase.io import read, write
 
 from nequip_extension_template.data.paths import SPLITS
 from nequip_extension_template.data.state import STATE_FILE
-from nequip_extension_template.sample.sampler import Sampler
+from nequip_extension_template.sample.sampler import Sampler, frames_digest
 
 
 class ToySampler(Sampler):
@@ -173,3 +173,64 @@ def test_resume_refuses_unrecorded_split_files(tmp_path):
 
     with pytest.raises(FileExistsError, match=STATE_FILE):
         build_sampler(sample_path, base).generate()
+
+
+# ------------------------------------------- provenance the generator owns
+
+
+def test_frames_digest_tracks_loaded_structure_contents():
+    """Hashed from the parsed structures, so reformatting the file is not a change."""
+    a = Atoms("Ar", positions=[[0.0, 0.0, 0.0]], cell=[5.0, 5.0, 5.0], pbc=True)
+    b = Atoms("Ar", positions=[[0.1, 0.0, 0.0]], cell=[5.0, 5.0, 5.0], pbc=True)
+    assert frames_digest([a]) == frames_digest([a.copy()])
+    assert frames_digest([a]) != frames_digest([b])
+    assert frames_digest([a]) != frames_digest([a, b])
+
+
+def test_check_compatible_refuses_a_changed_setting(tmp_path):
+    base = tmp_path / "base.xyz"
+    write_base_frame(base)
+    sampler = build_sampler(tmp_path / "sampled", base)
+    stored = sampler.provenance()
+    sampler.sampler_config = dict(sampler.sampler_config, target=99)
+
+    with pytest.raises(ValueError, match=r"target: 4 -> 99"):
+        sampler.check_compatible(stored, n_written=4)
+
+
+def test_check_compatible_refuses_changed_base_frame_contents(tmp_path):
+    base = tmp_path / "base.xyz"
+    write_base_frame(base)
+    sampler = build_sampler(tmp_path / "sampled", base)
+    stored = dict(sampler.provenance(), base_frames="not-the-same-digest")
+
+    with pytest.raises(ValueError, match="base frame contents"):
+        sampler.check_compatible(stored, n_written=4)
+
+
+def test_check_compatible_refuses_another_procedure(tmp_path):
+    base = tmp_path / "base.xyz"
+    write_base_frame(base)
+    sampler = build_sampler(tmp_path / "sampled", base)
+    stored = dict(sampler.provenance(), generator_class="pkg.SomethingElse")
+
+    with pytest.raises(ValueError, match="one procedure"):
+        sampler.check_compatible(stored, n_written=4)
+
+
+def test_check_compatible_refuses_a_sampler_with_no_config(tmp_path):
+    base = tmp_path / "base.xyz"
+    write_base_frame(base)
+    sampler = build_sampler(tmp_path / "sampled", base)
+    stored = sampler.provenance()
+    sampler.sampler_config = None
+
+    with pytest.raises(ValueError, match="was not given the config"):
+        sampler.check_compatible(stored, n_written=4)
+
+
+def test_check_compatible_accepts_unchanged_settings(tmp_path):
+    base = tmp_path / "base.xyz"
+    write_base_frame(base)
+    sampler = build_sampler(tmp_path / "sampled", base)
+    sampler.check_compatible(sampler.provenance(), n_written=4)

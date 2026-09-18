@@ -42,8 +42,11 @@ scratch in small approved steps.
   properties off the store. Abstract surface = `finished` (property) + `step()`. Overridable:
   `procedure_state()` (default `{}`), `restore_progress(blob)` (default RAISES
   `NotImplementedError` → a sampler not taught to resume refuses instead of duplicating
-  everything). Concrete: `append`, `split_file`, `provenance()`, `check_goal(stored, n_written)`,
-  `write_state()`, `resume_from(record)`, `generate()`.
+  everything). Concrete: `append`, `split_file`, `provenance()`, `_comparable(provenance)`,
+  `check_compatible(stored, n_written)`, `write_state()`, `resume_from(record)`, `generate()`.
+  Module fn `frames_digest(frames)` — hashes the PARSED structures (numbers, rounded
+  positions, cell, pbc), NOT file bytes, so reformatting the input file is not a change but
+  moving an atom is. Opposite of `store.digests()`, which hashes output bytes.
 - `rattle.py` (212) — `RattleSampler`. Owns `label()` (teacher call + `SinglePointCalculator`).
   Resumes: `procedure_state()` = `{"n_steps": ...}`, nothing else — order is variant-major and
   fixed, and the goal must be unchanged, so the count IS the position. Module fns: `frame_key`,
@@ -57,10 +60,11 @@ scratch in small approved steps.
 `nequip_extension_template/data/`
 - `paths.py` — `SPLITS`, `split_file(sample_path, split)`. **The only home for these** —
   `sample/` no longer re-exports them.
-- `state.py` — free fns behind the store: `STATE_FILE`/`STATE_VERSION`, `frames_digest`,
-  `flatten`, `split_offsets`, atomic `read_state`/`write_state`, `check_goal`, `truncate_to`,
-  `refuse_existing_split_files_without_state`. `check_goal` still takes `base_frames` — a
-  semantic leak that Phase B moves to the generator (`planning.md` §11.8).
+- `state.py` — free fns behind the store: `STATE_FILE`/`STATE_VERSION`, `flatten`,
+  `split_offsets`, atomic `read_state`/`write_state`, `refuse_changed_settings`, `truncate_to`,
+  `refuse_existing_split_files_without_state`. **Imports no ASE** — `refuse_changed_settings`
+  diffs two FLAT `{name: value}` dicts the caller built, so the data layer never computes
+  either side and never learns what a base frame is.
 - `store.py` — `SampleStore`, the physical layer as an object and **the only thing that touches
   the generated files**. `append` / `offsets` / `digests` / `load_record` / `save_record` /
   `reconcile(contents)` / `refuse_orphan_files`. Presents the target three-section record shape
@@ -87,7 +91,7 @@ unused placeholder fields; `model/`, `nn/`, `train/` are README-only stub dirs.
 | rattle resume | works (truncate to recorded offset, continue) |
 | MD sampling | runs, but scaffolding — see `planning.md` §8 |
 | MD resume | REFUSES (base-class `NotImplementedError`) |
-| resume w/ ANY sampler-config difference | REFUSES, incl. `calculator.device` — deliberate; classification deferred to §11.10 |
+| resume w/ ANY sampler-config difference | REFUSES, incl. `calculator.device` — deliberate; `immutable_keys()` classification deferred to §11.10 |
 | growing a dataset + `ckpt_path` | **NO LONGER GUARDED** — guard died with the CLI, replacement deferred to §11.10 |
 | warm start on grown data | not implemented (D11 Path B) |
 | MD under the datamodule | untested, no example |

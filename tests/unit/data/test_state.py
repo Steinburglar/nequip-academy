@@ -7,10 +7,9 @@ from nequip_extension_template.data.paths import SPLITS, split_file
 from nequip_extension_template.data.state import (
     STATE_FILE,
     STATE_VERSION,
-    check_goal,
     flatten,
-    frames_digest,
     read_state,
+    refuse_changed_settings,
     refuse_existing_split_files_without_state,
     split_offsets,
     state_file,
@@ -39,17 +38,12 @@ def test_flatten_reports_nested_config_keys():
     }
 
 
-def test_frames_digest_tracks_loaded_structure_contents():
-    assert frames_digest([frame(0.0)]) == frames_digest([frame(0.0)])
-    assert frames_digest([frame(0.0)]) != frames_digest([frame(1.0)])
-
-
 def test_write_state_is_atomic_and_read_state_round_trips(tmp_path):
     path = state_file(tmp_path)
     payload = {
         "version": STATE_VERSION,
         "sampler_class": "example.Sampler",
-        "goal": {"config": {}, "base_frames": frames_digest([frame()])},
+        "goal": {"config": {}, "base_frames": "a1b2c3d4"},
         "progress": {"n_written": 0},
     }
 
@@ -63,55 +57,42 @@ def test_read_state_returns_none_when_absent(tmp_path):
     assert read_state(state_file(tmp_path)) is None
 
 
-def test_check_goal_refuses_config_difference_and_names_it(tmp_path):
-    stored_goal = {
-        "config": {"calculator": {"device": "cpu"}, "seed": 1},
-        "base_frames": frames_digest([frame()]),
-    }
-
+def test_refuse_changed_settings_names_what_changed(tmp_path):
     with pytest.raises(ValueError) as error:
-        check_goal(
-            stored_goal,
-            live_config={"calculator": {"device": "cuda"}, "seed": 1},
-            base_frames=[frame()],
+        refuse_changed_settings(
+            {"calculator.device": "cpu", "seed": 1},
+            {"calculator.device": "cuda", "seed": 1},
             sample_path=tmp_path,
             n_written=4,
         )
-
     message = str(error.value)
     assert "produced under different settings" in message
     assert "calculator.device: 'cpu' -> 'cuda'" in message
+    assert "seed" not in message.split("settings:")[1].split("A resumed")[0]
 
 
-def test_check_goal_refuses_changed_base_frame_contents(tmp_path):
-    stored_goal = {
-        "config": {"seed": 1},
-        "base_frames": frames_digest([frame(0.0)]),
-    }
+def test_refuse_changed_settings_accepts_identical_settings(tmp_path):
+    refuse_changed_settings({"seed": 1}, {"seed": 1}, sample_path=tmp_path, n_written=4)
 
-    with pytest.raises(ValueError, match="base frame contents"):
-        check_goal(
-            stored_goal,
-            live_config={"seed": 1},
-            base_frames=[frame(1.0)],
-            sample_path=tmp_path,
-            n_written=4,
+
+def test_refuse_changed_settings_reports_a_key_only_one_side_has(tmp_path):
+    with pytest.raises(ValueError, match=r"extra: '<not set>' -> 7"):
+        refuse_changed_settings(
+            {}, {"extra": 7}, sample_path=tmp_path, n_written=1
         )
 
 
-def test_check_goal_refuses_missing_live_config(tmp_path):
-    stored_goal = {
-        "config": {"seed": 1},
-        "base_frames": frames_digest([frame()]),
-    }
-
-    with pytest.raises(ValueError, match="was not given the config"):
-        check_goal(
-            stored_goal,
-            live_config=None,
-            base_frames=[frame()],
+def test_refuse_changed_settings_appends_an_explanation(tmp_path):
+    with pytest.raises(ValueError, match="path has not"):
+        refuse_changed_settings(
+            {"base frame contents": "aaaa"},
+            {"base frame contents": "bbbb"},
             sample_path=tmp_path,
             n_written=4,
+            explanations={
+                "base frame contents": "(the file behind `base_frames` has changed, "
+                "even if its path has not)"
+            },
         )
 
 

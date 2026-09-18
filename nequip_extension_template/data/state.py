@@ -1,14 +1,17 @@
-"""Durable state helpers for generated distillation datasets."""
+"""Durable state helpers for generated distillation datasets.
 
-import hashlib
+Free functions behind :class:`~nequip_extension_template.data.store.SampleStore`.
+Nothing here knows what a structure is: this layer deals in paths, bytes and plain
+dicts, and anything that must be loaded or hashed to be compared is reduced to a value
+by the generator that owns it before it gets here.
+"""
+
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Sequence, Union
+from typing import Optional, Union
 
-import numpy as np
 import torch
-from ase import Atoms
 
 from nequip_extension_template.data.paths import SPLITS, split_file
 
@@ -21,18 +24,6 @@ STATE_VERSION = 1
 def state_file(sample_path: Union[str, Path]) -> Path:
     """Return the durable generation state path for a sample directory."""
     return Path(sample_path) / STATE_FILE
-
-
-def frames_digest(frames: Sequence[Atoms]) -> str:
-    """Return one content hash for a sequence of loaded structures."""
-    h = hashlib.sha256()
-    for atoms in frames:
-        numbers = atoms.get_atomic_numbers()
-        h.update(np.ascontiguousarray(numbers, dtype=np.int64).tobytes())
-        h.update(np.ascontiguousarray(np.round(atoms.get_positions(), 8)).tobytes())
-        h.update(np.ascontiguousarray(np.round(np.asarray(atoms.cell), 8)).tobytes())
-        h.update(np.ascontiguousarray(atoms.get_pbc()).tobytes())
-    return h.hexdigest()[:16]
 
 
 def flatten(value, prefix: str = "") -> dict:
@@ -73,37 +64,35 @@ def read_state(path: Union[str, Path]) -> Optional[dict]:
     return torch.load(path, weights_only=False)
 
 
-def check_goal(
-    stored_goal: dict,
+def refuse_changed_settings(
+    stored: dict,
+    live: dict,
     *,
-    live_config: Optional[dict],
-    base_frames: Sequence[Atoms],
     sample_path: Union[str, Path],
     n_written: int,
+    explanations: Optional[dict] = None,
 ) -> None:
-    """Refuse to continue a dataset whose stored goal differs from live settings."""
-    sample_path = Path(sample_path)
-    if live_config is None:
-        raise ValueError(
-            f"{sample_path} holds a dataset from an earlier run, but this sampler was "
-            "not given the config it is being asked to continue, so there is nothing "
-            "to compare against. `DistillationDataModule` supplies it; a sampler "
-            "built directly in a script must set `sampler_config` itself."
-        )
-    live = flatten(live_config)
-    stored = flatten(stored_goal["config"])
+    """Refuse to continue a dataset whose settings have since changed.
+
+    Pure mechanism: `stored` and `live` are FLAT ``{name: value}`` dicts and the names
+    are the caller's own wording, because only the caller knows what its settings are
+    called or which of them matter. `explanations` adds a trailing note to named keys,
+    for the cases where the values alone do not say what went wrong.
+
+    This layer deliberately cannot compute either side. Anything that needs to be
+    loaded, parsed or hashed to be compared -- base frames, teacher artifacts -- is
+    reduced to a value by whoever owns it before it arrives here.
+    """
+    explanations = explanations or {}
     differences = []
     for key in sorted(set(stored) | set(live)):
         before = stored.get(key, "<not set>")
         after = live.get(key, "<not set>")
         if before != after:
-            differences.append(f"  {key}: {before!r} -> {after!r}")
-    digest = frames_digest(base_frames)
-    if stored_goal["base_frames"] != digest:
-        differences.append(
-            f"  base frame contents: {stored_goal['base_frames']} -> {digest} "
-            "(the file behind `base_frames` has changed, even if its path has not)"
-        )
+            line = f"  {key}: {before!r} -> {after!r}"
+            if key in explanations:
+                line = f"{line} {explanations[key]}"
+            differences.append(line)
     if differences:
         joined = "\n".join(differences)
         raise ValueError(

@@ -154,7 +154,7 @@ def test_sampler_accepts_a_record_the_store_wrote(tmp_path):
     )
     assert record["contents"]["n_written"] == 1
     # the settings are unchanged, so this is the case that must NOT refuse
-    fresh.check_goal(record["provenance"], record["contents"]["n_written"])
+    fresh.check_compatible(record["provenance"], record["contents"]["n_written"])
 
 
 # ------------------------------------------------------------- reconciling

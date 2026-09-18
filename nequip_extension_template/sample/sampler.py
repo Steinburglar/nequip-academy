@@ -32,20 +32,42 @@ magnitude is fine, changing the seed is not -- comes next; until then nothing ca
 quietly wrong, because nothing is allowed to change.
 """
 
+import hashlib
 import logging
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
+import numpy as np
 from ase import Atoms
-from ase.io import read, write
+from ase.io import read
 
 from nequip_extension_template.data.state import (
-    check_goal as check_stored_goal,
-    frames_digest,
+    flatten,
+    refuse_changed_settings,
 )
 from nequip_extension_template.data.store import SampleStore
 
 logger = logging.getLogger(__name__)
+
+
+def frames_digest(frames: Sequence[Atoms]) -> str:
+    """One content hash for a sequence of loaded structures.
+
+    Lives here rather than in the data layer because it answers a question only a
+    procedure asks: "am I being told to continue from the same starting material?"
+    Note what it hashes -- the parsed numbers, positions, cell and pbc, not the file's
+    bytes. Reformatting the input file is therefore fine; moving an atom is not. That
+    is the opposite of how the store hashes its own output, where the question really
+    is whether the bytes are the ones it wrote.
+    """
+    h = hashlib.sha256()
+    for atoms in frames:
+        numbers = atoms.get_atomic_numbers()
+        h.update(np.ascontiguousarray(numbers, dtype=np.int64).tobytes())
+        h.update(np.ascontiguousarray(np.round(atoms.get_positions(), 8)).tobytes())
+        h.update(np.ascontiguousarray(np.round(np.asarray(atoms.cell), 8)).tobytes())
+        h.update(np.ascontiguousarray(atoms.get_pbc()).tobytes())
+    return h.hexdigest()[:16]
 
 
 class Sampler:
@@ -167,30 +189,60 @@ class Sampler:
             "base_frames": frames_digest(self.base_frames),
         }
 
-    def check_goal(self, stored_goal: dict, n_written: int) -> None:
+    def _comparable(self, provenance: dict) -> dict:
+        """Flatten one provenance into the named settings a refusal talks about.
+
+        The names are chosen here, not in the data layer, because they are what the
+        user reads. A subclass with settings that need different wording, or that are
+        not plain config values, overrides this.
+        """
+        flat = flatten(provenance["config"])
+        flat["base frame contents"] = provenance["base_frames"]
+        return flat
+
+    def check_compatible(self, stored_provenance: dict, n_written: int) -> None:
         """Refuse to continue a dataset whose settings have since changed.
 
-        Future versions should be able to carefully identify settings that ARE
-        allowed to change, but that is not yet implemented.
+        The procedure owns this rather than the datamodule because the comparison is
+        not always a key diff: a future rattle may accept an added strain magnitude so
+        long as the existing structures are untouched, which is a judgement only
+        rattle can make. Subclasses that need that override this method; the default
+        below is the ordinary case and uses the shared differ.
+
+        No setting is exempt yet -- classification into immutable and mutable comes
+        later (`planning.md` 11.10).
 
         `n_written` comes from the record rather than from the store, because this
-        runs before the store has been reconciled -- the count is only there to say
-        how much is at stake.
+        runs before the store has been reconciled; the count is only there to say how
+        much is at stake.
         """
         live = f"{type(self).__module__}.{type(self).__qualname__}"
-        stored_class = stored_goal.get("generator_class")
+        stored_class = stored_provenance.get("generator_class")
         if stored_class != live:
             raise ValueError(
                 f"{self.sample_path} was sampled by {stored_class}, the config asks "
                 f"for {live}. One dataset is the output of one procedure -- point "
                 "`sample_path` somewhere else."
             )
-        check_stored_goal(
-            stored_goal,
-            live_config=self.sampler_config,
-            base_frames=self.base_frames,
+        if self.sampler_config is None:
+            raise ValueError(
+                f"{self.sample_path} holds a dataset from an earlier run, but this "
+                "sampler was not given the config it is being asked to continue, so "
+                "there is nothing to compare against. `DistillationDataModule` "
+                "supplies it; a sampler built directly in a script must set "
+                "`sampler_config` itself."
+            )
+        refuse_changed_settings(
+            self._comparable(stored_provenance),
+            self._comparable(self.provenance()),
             sample_path=self.sample_path,
             n_written=n_written,
+            explanations={
+                "base frame contents": (
+                    "(the file behind `base_frames` has changed, even if its path "
+                    "has not)"
+                )
+            },
         )
 
     def write_state(self) -> None:
@@ -206,7 +258,7 @@ class Sampler:
         then is the procedure asked to restore itself -- by which point the dataset is
         already in the state the record describes.
         """
-        self.check_goal(record["provenance"], record["contents"]["n_written"])
+        self.check_compatible(record["provenance"], record["contents"]["n_written"])
         self.store.reconcile(record["contents"])
         self.n_resumed = self.n_written
         self.restore_progress(record["progress"])
