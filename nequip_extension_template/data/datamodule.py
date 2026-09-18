@@ -10,8 +10,8 @@ from hydra.utils import instantiate
 from nequip.data.datamodule import ASEDataModule
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from nequip_extension_template.sample import SPLITS, split_file
-from nequip_extension_template.sample.sampler import STATE_FILE
+from nequip_extension_template.data.paths import SPLITS, split_file
+from nequip_extension_template.data.state import refuse_existing_split_files_without_state
 
 logger = logging.getLogger(__name__)
 
@@ -160,19 +160,7 @@ class DistillationDataModule(ASEDataModule):
         sampler.sample_path.mkdir(parents=True, exist_ok=True)
         state = sampler.read_state()
         if state is None:
-            existing = [
-                str(sampler.split_file(s))
-                for s in SPLITS
-                if sampler.split_file(s).exists()
-            ]
-            if existing:
-                raise FileExistsError(
-                    f"{existing} already exist, but {STATE_FILE} does not. Without it "
-                    "there is no record of what those structures are or what settings "
-                    "produced them, so they can neither be continued nor safely "
-                    "appended to -- delete them, or point `sample_path` somewhere "
-                    "else."
-                )
+            refuse_existing_split_files_without_state(sampler.sample_path)
             return None
 
         progress = state["progress"]

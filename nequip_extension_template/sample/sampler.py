@@ -32,60 +32,30 @@ magnitude is fine, changing the seed is not -- comes next; until then nothing ca
 quietly wrong, because nothing is allowed to change.
 """
 
-import hashlib
 import logging
-import os
 from pathlib import Path
-from typing import Optional, Sequence, Union
+from typing import Optional, Union
 
-import numpy as np
-import torch
 from ase import Atoms
 from ase.io import read, write
 
+from nequip_extension_template.data.paths import SPLITS, split_file
+from nequip_extension_template.data.state import (
+    STATE_FILE,
+    STATE_VERSION,
+    check_goal as check_stored_goal,
+    check_state_header,
+    frames_digest,
+    flatten,
+    read_state as read_state_file,
+    refuse_existing_split_files_without_state,
+    split_offsets,
+    state_file,
+    truncate_to as truncate_split_files_to,
+    write_state as write_state_file,
+)
+
 logger = logging.getLogger(__name__)
-
-SPLITS = ("train", "val", "test")
-STATE_FILE = "sampler_state.pt"
-STATE_VERSION = 1
-
-
-def split_file(sample_path: Union[str, Path], split: str) -> Path:
-    """Where the structures of one split live inside a ``sample_path``.
-
-    This is a free function because `nequip-distill` needs dataset paths even when a
-    run has no `sample` stage and therefore should not build a sampler or load the
-    teacher.
-    """
-    if split not in SPLITS:
-        raise ValueError(f"unknown split {split!r}, expected one of {list(SPLITS)}")
-    return Path(sample_path) / f"{split}.extxyz"
-
-
-def frames_digest(frames: Sequence[Atoms]) -> str:
-    """Return one content hash for a sequence of loaded structures."""
-    h = hashlib.sha256()
-    for atoms in frames:
-        numbers = atoms.get_atomic_numbers()
-        h.update(np.ascontiguousarray(numbers, dtype=np.int64).tobytes())
-        h.update(np.ascontiguousarray(np.round(atoms.get_positions(), 8)).tobytes())
-        h.update(np.ascontiguousarray(np.round(np.asarray(atoms.cell), 8)).tobytes())
-        h.update(np.ascontiguousarray(atoms.get_pbc()).tobytes())
-    return h.hexdigest()[:16]
-
-
-def flatten(value, prefix: str = "") -> dict:
-    """Nested config dict -> flat, e.g ``{"calculator.device": "cuda"}`` form.
-
-    Only so that a diff can be reported as one short line per setting instead
-    of two whole config dumps to eyeball.
-    """
-    if isinstance(value, dict) and value:
-        flat = {}
-        for key, item in value.items():
-            flat.update(flatten(item, f"{prefix}{key}."))
-        return flat
-    return {prefix.rstrip("."): value}
 
 
 class Sampler:
@@ -188,7 +158,7 @@ class Sampler:
 
     @property
     def state_file(self) -> Path:
-        return self.sample_path / STATE_FILE
+        return state_file(self.sample_path)
 
     def goal_state(self) -> dict:
         """Metadata that defines which run is allowed to continue this dataset."""
@@ -203,14 +173,7 @@ class Sampler:
 
     def split_offsets(self) -> dict:
         """Byte length of each split file at the moment progress is recorded."""
-        return {
-            split: (
-                self.split_file(split).stat().st_size
-                if self.split_file(split).exists()
-                else 0
-            )
-            for split in SPLITS
-        }
+        return split_offsets(self.sample_path)
 
     def progress_state(self) -> dict:
         """Mutable progress needed to continue after interruption."""
@@ -234,10 +197,7 @@ class Sampler:
 
     def write_state(self) -> None:
         """Record the current durable state atomically."""
-        payload = self.state_payload()
-        temporary = self.state_file.with_suffix(".pt.tmp")
-        torch.save(payload, temporary)
-        os.replace(temporary, self.state_file)
+        write_state_file(self.state_file, self.state_payload())
 
     def read_state(self) -> Optional[dict]:
         """Load the record, or ``None`` if there is none. Refuse one we cannot trust.
@@ -245,60 +205,29 @@ class Sampler:
         ``weights_only=False`` because this is a record of plain python values, not a
         tensor checkpoint, and nothing writes it but :meth:`write_state`.
         """
-        if not self.state_file.exists():
+        state = read_state_file(self.state_file)
+        if state is None:
             return None
-        state = torch.load(self.state_file, weights_only=False)
-
-        version = state.get("version")
-        if version != STATE_VERSION:
-            raise ValueError(
-                f"{self.state_file} is in record format {version!r}, this code writes "
-                f"format {STATE_VERSION}. Resuming across formats is not supported -- "
-                "point `sample_path` somewhere else, or delete it."
-            )
         live = f"{type(self).__module__}.{type(self).__qualname__}"
-        if state.get("sampler_class") != live:
-            raise ValueError(
-                f"{self.sample_path} was sampled by {state.get('sampler_class')}, the "
-                f"config asks for {live}. One dataset is the output of one procedure "
-                "-- point `sample_path` somewhere else."
-            )
+        check_state_header(
+            state,
+            expected_version=STATE_VERSION,
+            expected_class=live,
+            sample_path=self.sample_path,
+        )
         return state
 
     def check_goal(self, stored_goal: dict) -> None:
         """Refuse to continue a dataset whose settings have since changed.
             Future versions should be able to carefully identify settings that ARE allowed to change, but that is not yet implemented.
         """
-        if self.sampler_config is None:
-            raise ValueError(
-                f"{self.sample_path} holds a dataset from an earlier run, but this "
-                "sampler was not given the config it is being asked to continue, so "
-                "there is nothing to compare against. The `nequip-distill` script "
-                "supplies it; a sampler built directly in a script must set "
-                "`sampler_config` itself."
-            )
-        live = flatten(self.sampler_config)
-        stored = flatten(stored_goal["config"])
-        differences = []
-        for key in sorted(set(stored) | set(live)):
-            before = stored.get(key, "<not set>")
-            after = live.get(key, "<not set>")
-            if before != after:
-                differences.append(f"  {key}: {before!r} -> {after!r}")
-        if stored_goal["base_frames"] != frames_digest(self.base_frames):
-            differences.append(
-                f"  base frame contents: {stored_goal['base_frames']} -> "
-                f"{frames_digest(self.base_frames)} (the file behind `base_frames` "
-                "has changed, even if its path has not)"
-            )
-        if differences:
-            joined = "\n".join(differences)
-            raise ValueError(
-                f"{self.sample_path} holds {self.n_written} structure(s) produced "
-                f"under different settings:\n{joined}\n"
-                "A resumed run can only continue a dataset it would have produced "
-                "itself. Put these back, or point `sample_path` somewhere else."
-            )
+        check_stored_goal(
+            stored_goal,
+            live_config=self.sampler_config,
+            base_frames=self.base_frames,
+            sample_path=self.sample_path,
+            n_written=self.n_written,
+        )
 
     def truncate_to(self, offsets: dict) -> None:
         """Cut each split file back to the length the record gives for it.
@@ -308,31 +237,7 @@ class Sampler:
         record write. They are dropped and produced again.
 
         """
-        for split in SPLITS:
-            path = self.split_file(split)
-            offset = int(offsets[split])
-            if not path.exists():
-                if offset:
-                    raise FileNotFoundError(
-                        f"{self.state_file} says {split} holds {offset} bytes, but "
-                        f"{path} does not exist."
-                    )
-                continue
-            size = path.stat().st_size
-            if size < offset:
-                raise ValueError(
-                    f"{path} is {size} bytes, shorter than the {offset} bytes "
-                    f"{self.state_file} records for it. The record and the dataset in "
-                    f"{self.sample_path} are not from the same run -- point "
-                    "`sample_path` somewhere else."
-                )
-            if size > offset:
-                logger.warning(
-                    f"{path}: dropping the last {size - offset} byte(s), appended "
-                    "after the record was last written; they will be produced again."
-                )
-                with open(path, "r+b") as f:
-                    f.truncate(offset)
+        truncate_split_files_to(self.sample_path, offsets)
 
     # --------------------------------------------------------------------- main loop
 
@@ -346,17 +251,7 @@ class Sampler:
         state = self.read_state()
 
         if state is None:
-            existing = [
-                str(self.split_file(s)) for s in SPLITS if self.split_file(s).exists()
-            ]
-            if existing:
-                raise FileExistsError(
-                    f"{existing} already exist, but {STATE_FILE} does not. Without it "
-                    "there is no record of what those structures are or what settings "
-                    "produced them, so they can neither be continued nor safely "
-                    "appended to -- delete them, or point `sample_path` somewhere "
-                    "else."
-                )
+            refuse_existing_split_files_without_state(self.sample_path)
         else:
             progress = state["progress"]
             # counters first, so the refusal below can say how much is at stake
