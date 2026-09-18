@@ -629,8 +629,7 @@ This is the intuition the whole design hangs on.
 
 ```python
 {
-    "version": 2,
-    "generator_class": "nequip_extension_template.sample.RattleGenerator",
+    "version": 2,          # store writes, store checks
     "provenance": {...},   # generator writes, generator checks
     "contents":   {...},   # store writes, store checks
     "progress":   {...},   # generator writes, generator restores
@@ -639,10 +638,17 @@ This is the intuition the whole design hangs on.
 
 | section | contents | writer / checker | why there |
 |---|---|---|---|
-| header | `version`, `generator_class` | store | guards on the record file itself; must be trusted before anything else may interpret it |
-| `provenance` | immutable settings, base-frame digest, teacher identity | generator | only the generator knows which knobs are load-bearing |
+| `version` | record format | store | the format of the file the store itself writes; nothing can be interpreted until it is trusted |
+| `provenance` | generator class name, immutable settings, base-frame digest, teacher identity | generator | only the generator knows which knobs are load-bearing |
 | `contents` | per-split byte `offsets`, per-split `digests`, `n_written`, `split_counts` | store | only the store touches bytes |
 | `progress` | procedure position (rattle `n_steps`; MD positions/velocities/RNG) | generator | procedure-specific by nature |
+
+**The store does not check which procedure produced a dataset** (user, 2026-09-18). An earlier
+draft gave it a `generator_class` header field to guard. That is provenance: the generator carries
+its own class name there and refuses a mismatch itself, which removes a whole compatibility layer
+from the store and gives a better message, since only the generator can say *why* two procedures
+are incompatible. Order makes it safe -- `check_compatible` runs before anything asks a generator
+to restore another procedure's `progress`.
 
 Offsets and digests are deliberately **not** part of generator progress. If they were, `state()`
 would have to produce them, which forces generator code to know about byte offsets — precisely the
@@ -677,15 +683,28 @@ nequip_extension_template/
 
 ```python
 append(atoms, split)                 # write, track offsets + counts
-offsets() / counts()
+n_written / split_counts             # counters
+offsets() / digests()
 save_record(provenance, progress)    # atomic; injects `contents`
-load_record(expected_class)          # None | record; checks header
-verify_and_repair()                  # sizes vs offsets, truncate excess, then digests
+load_record()                        # None | record; checks `version` only
+reconcile(contents)                  # disk + counters <- record
 refuse_orphan_files()                # split files with no record
 ```
 
-`verify_and_repair()` does trim-then-recheck in one call, because the order is forced: a torn tail
-must be cut *before* digests can match.
+Three things must agree: the bytes on disk, the record, and the store's own counters. On a fresh
+run all three start empty and stay in step as `append` runs; on a resume the process is new, so
+the counters are zero while disk and record may be well along. `reconcile(contents)` puts them
+back in step -- refuse a short file, truncate a torn tail, compare digests, then seed the
+counters. One call, because the order is forced (a torn tail must be cut *before* digests can
+match) and because seeding is only correct *after* the repair.
+
+The store's only state is those counters. Offsets are free from `stat()`, but `n_written` and
+`split_counts` cannot be recovered without parsing every structure, so they are carried.
+
+`contents` is an argument rather than a cached record, so the sequencing stays visible in the
+datamodule and `reconcile` has no hidden dependency on `load_record` having run. `load_record`
+deliberately does not seed the counters: the provenance check sits between the two, and a run
+refused there must leave the store untouched.
 
 **2. `Generator`** — the science, and its own state.
 
@@ -709,15 +728,15 @@ checks nothing; it only sequences.
 
 ```python
 def prepare_data(self):
-    store = SampleStore(self.sample_path)
     generator = instantiate(self.generation)        # teacher NOT loaded yet
-    record = store.load_record(expected_class=qualname(generator))
+    store = SampleStore(self.sample_path)
+    record = store.load_record()
 
     if record is None:
         store.refuse_orphan_files()
     else:
         generator.check_compatible(record["provenance"])   # (a) semantic, cheapest, first
-        store.verify_and_repair()                          # (b)+(c) physical: trim, then digest
+        store.reconcile(record["contents"])                # (b)+(c) physical: trim, then digest
         generator.restore(record["progress"])              # (d)
         if generator.finished:
             return                                         # teacher never loaded
@@ -735,13 +754,13 @@ The apparent tension ("some checks are generator-specific") dissolves one level 
 
 | check | mechanism (data layer) | policy (generator) |
 |---|---|---|
-| config compatibility | `diff_configs(stored, live, immutable_keys)` | supplies `immutable_keys` |
+| config compatibility | `diff_configs(stored, live, immutable_keys)` | supplies `immutable_keys`, incl. its own class name |
 | base-frame identity | `frames_digest()` | decides that base frames *are* provenance |
 | size vs offsets, truncation | total | none |
 | content digests | total | none |
 | resume position | serialize/restore contract | supplies + consumes the dict |
 | record format version | total | none |
-| generator class match | total (caller supplies expected) | none |
+| generator class match | none -- it is one provenance key | the generator's own |
 
 ### 11.6 Target user-facing shape (settled, already implemented)
 
