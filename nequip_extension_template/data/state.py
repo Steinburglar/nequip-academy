@@ -18,7 +18,7 @@ from nequip_extension_template.data.paths import SPLITS, split_file
 logger = logging.getLogger(__name__)
 
 STATE_FILE = "sampler_state.pt"
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 
 def state_file(sample_path: Union[str, Path]) -> Path:

@@ -86,13 +86,14 @@ def test_generate_writes_state_that_matches_disk(tmp_path):
     }
 
     state = torch.load(sample_path / STATE_FILE, weights_only=False)
-    progress = state["progress"]
-    assert progress["n_written"] == 4
-    assert progress["split_counts"] == {"train": 2, "val": 1, "test": 1}
-    assert progress["procedure"] == {"i": 4}
-    assert progress["offsets"] == {
+    contents = state["contents"]
+    assert contents["n_written"] == 4
+    assert contents["split_counts"] == {"train": 2, "val": 1, "test": 1}
+    assert state["progress"] == {"i": 4}
+    assert contents["offsets"] == {
         split: (sample_path / f"{split}.extxyz").stat().st_size for split in SPLITS
     }
+    assert all(contents["digests"][split] is not None for split in SPLITS)
     assert not (sample_path / "sampler_state.pt.tmp").exists()
 
 
@@ -114,8 +115,8 @@ def test_resume_truncates_bytes_after_last_record(tmp_path):
         interrupted.generate()
 
     state = torch.load(sample_path / STATE_FILE, weights_only=False)
-    recorded_offsets = state["progress"]["offsets"]
-    assert state["progress"]["n_written"] == 2
+    recorded_offsets = state["contents"]["offsets"]
+    assert state["contents"]["n_written"] == 2
     assert sum(split_count(sample_path, split) for split in SPLITS) == 3
     assert any(
         (sample_path / f"{split}.extxyz").stat().st_size > recorded_offsets[split]

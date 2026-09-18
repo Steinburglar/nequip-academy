@@ -25,13 +25,7 @@ generator's ``state()`` would have to produce them, which would force procedure 
 to know about byte offsets. They are equally not provenance -- provenance is fixed for
 the dataset's whole life, while contents change at every checkpoint.
 
-See ``planning.md`` section 11 for the full picture. This module is Phase A: the API
-below is the final shape, but it still reads and writes the version-1
-``sampler_state.pt`` layout so that datasets generated before the refactor keep
-working. The three-section split already exists there, just nested differently and
-without digests, so :meth:`SampleStore.load_record` and :meth:`SampleStore.save_record`
-translate between the two. Phase C bumps the format and deletes the translation;
-nothing else about this interface changes.
+See ``planning.md`` section 11 for the full picture.
 """
 
 import hashlib
@@ -109,15 +103,28 @@ class SampleStore:
     def digests(self) -> dict:
         """Content hash of each split file, ``None`` where the file is absent.
 
-        Not yet compared against anything: the version-1 record does not carry
-        digests. Phase C stores these and makes :meth:`reconcile` check them.
+        Read from disk every time, deliberately: this is the value :meth:`reconcile`
+        compares a record against, so it has to be what the files actually say rather
+        than something this process has been keeping in its head.
+
+        Cost: every :meth:`save_record` re-reads all three files. At the scale this
+        package is used at -- hundreds of structures, a megabyte or two -- that is
+        microseconds against a teacher call per structure. It is quadratic in the
+        number of checkpoints, so a very large dataset should raise `state_interval`
+        rather than checkpoint after every structure. An incremental hash kept across
+        appends would fix the asymptotics and was rejected as optimising for a size
+        nobody runs here.
         """
         digested = {}
         for split in SPLITS:
             path = self.split_file(split)
-            digested[split] = (
-                hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-            )
+            raw = path.read_bytes() if path.exists() else b""
+            # An empty file and an absent one hold the same zero structures, so they
+            # must digest the same. Truncating back to offset 0 leaves a file that
+            # exists and is empty, and a record written before that file was first
+            # touched has `None` for it; without this they would disagree and a
+            # perfectly good resume would be refused.
+            digested[split] = hashlib.sha256(raw).hexdigest() if raw else None
         return digested
 
     # ------------------------------------------------------------------ writing
@@ -151,30 +158,22 @@ class SampleStore:
             return None
 
         version = stored.get("version")
+        if version == 1:
+            raise ValueError(
+                f"{self.record_file} is a format-1 record, written before the "
+                "generator/store split. Format 2 keeps the byte-level contents in "
+                "their own section and records a content hash per split file, and "
+                "neither can be recovered from a format-1 record. There is no "
+                "migration: regenerate the dataset into a fresh `sample_path`, or "
+                "delete this one and start over."
+            )
         if version != STATE_VERSION:
             raise ValueError(
                 f"{self.record_file} is in record format {version!r}, this code "
                 f"writes format {STATE_VERSION}. Resuming across formats is not "
                 "supported -- point `sample_path` somewhere else, or delete it."
             )
-
-        # Version-1 translation: the class name sits in the header rather than in
-        # provenance, and the stored `progress` carries the byte-level contents
-        # alongside the procedure's own position.
-        progress = stored["progress"]
-        return {
-            "version": version,
-            "provenance": {
-                "generator_class": stored.get("sampler_class"),
-                **stored["goal"],
-            },
-            "contents": {
-                "n_written": int(progress["n_written"]),
-                "split_counts": {s: int(progress["split_counts"][s]) for s in SPLITS},
-                "offsets": dict(progress["offsets"]),
-            },
-            "progress": progress["procedure"],
-        }
+        return stored
 
     def save_record(self, provenance: dict, progress: dict) -> None:
         """Write the record atomically, injecting the ``contents`` section.
@@ -188,16 +187,14 @@ class SampleStore:
             self.record_file,
             {
                 "version": STATE_VERSION,
-                "sampler_class": provenance.get("generator_class"),
-                "goal": {
-                    k: v for k, v in provenance.items() if k != "generator_class"
-                },
-                "progress": {
+                "provenance": dict(provenance),
+                "contents": {
                     "n_written": self._n_written,
                     "split_counts": dict(self._split_counts),
                     "offsets": self.offsets(),
-                    "procedure": progress,
+                    "digests": self.digests(),
                 },
+                "progress": progress,
             },
         )
 
@@ -218,8 +215,10 @@ class SampleStore:
            run -- refuse, there is nothing safe to do
         2. a split file longer than its recorded offset is a torn write: structures
            appended after the last checkpoint. Truncate; they get produced again
-        3. compare digests, once the tail is gone and there is something to compare
-           against (Phase C)
+        3. compare digests, now that the tail is gone. Offsets alone catch the
+           realistic failure -- a torn write of a file we appended to ourselves -- but
+           they say nothing about a file that is the right length and the wrong
+           content, whether edited by hand or left over from a different dataset
 
         Then seed the counters from the record, since disk and record now agree.
 
@@ -228,6 +227,23 @@ class SampleStore:
         has no hidden dependency on :meth:`load_record` having been called.
         """
         truncate_to(self._sample_path, contents["offsets"])
+
+        recorded = contents["digests"]
+        actual = self.digests()
+        wrong = [s for s in SPLITS if recorded[s] != actual[s]]
+        if wrong:
+            lines = "\n".join(
+                f"  {self.split_file(s)}: recorded {recorded[s]}, found {actual[s]}"
+                for s in wrong
+            )
+            raise ValueError(
+                f"{self._sample_path} does not hold the structures "
+                f"{self.record_file} was written for:\n{lines}\n"
+                "The files are the recorded length but not the recorded content, so "
+                "they have been edited or swapped since. Continuing would append to "
+                "somebody else's dataset -- point `sample_path` somewhere else."
+            )
+
         self._n_written = int(contents["n_written"])
         self._split_counts = {s: int(contents["split_counts"][s]) for s in SPLITS}
 

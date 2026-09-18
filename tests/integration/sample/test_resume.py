@@ -177,23 +177,28 @@ def test_the_record_says_what_is_actually_on_disk(reference):
     import torch
 
     state = torch.load(reference / STATE_FILE, weights_only=False)
-    progress = state["progress"]
-    assert progress["n_written"] == 50
-    assert progress["split_counts"] == {"train": 40, "val": 5, "test": 5}
-    assert sum(progress["split_counts"].values()) == progress["n_written"]
+    contents = state["contents"]
+    assert contents["n_written"] == 50
+    assert contents["split_counts"] == {"train": 40, "val": 5, "test": 5}
+    assert sum(contents["split_counts"].values()) == contents["n_written"]
     # the point of the offsets: each is that file's length, so a resume can cut back
-    for split, offset in progress["offsets"].items():
+    for split, offset in contents["offsets"].items():
         assert offset == (reference / f"{split}.extxyz").stat().st_size
+    # and the point of the digests: the right length is not the same as the right bytes
+    for split, digest in contents["digests"].items():
+        expected = hashlib.sha256((reference / f"{split}.extxyz").read_bytes())
+        assert digest == expected.hexdigest()
     assert not (reference / "sampler_state.pt.tmp").exists()
 
 
 def test_the_record_stores_the_config_and_the_base_frame_contents(reference, frames):
     import torch
 
-    goal = torch.load(reference / STATE_FILE, weights_only=False)["goal"]
-    assert goal["config"]["seed"] == 1
-    assert goal["config"]["base_frames"] == str(frames[10])
-    assert isinstance(goal["base_frames"], str) and goal["base_frames"]
+    provenance = torch.load(reference / STATE_FILE, weights_only=False)["provenance"]
+    assert provenance["config"]["seed"] == 1
+    assert provenance["config"]["base_frames"] == str(frames[10])
+    assert isinstance(provenance["base_frames"], str) and provenance["base_frames"]
+    assert provenance["generator_class"].endswith("RattleSampler")
 
 
 # ------------------------------------------------------------------------- resuming
@@ -229,7 +234,7 @@ def test_a_structure_appended_after_the_last_record_write_is_truncated(
 
     import torch
 
-    offsets = torch.load(path / STATE_FILE, weights_only=False)["progress"]["offsets"]
+    offsets = torch.load(path / STATE_FILE, weights_only=False)["contents"]["offsets"]
     excess = sum(
         (path / f"{s}.extxyz").stat().st_size - offsets[s]
         for s in SPLITS

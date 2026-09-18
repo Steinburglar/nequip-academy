@@ -67,10 +67,14 @@ scratch in small approved steps.
   either side and never learns what a base frame is.
 - `store.py` — `SampleStore`, the physical layer as an object and **the only thing that touches
   the generated files**. `append` / `offsets` / `digests` / `load_record` / `save_record` /
-  `reconcile(contents)` / `refuse_orphan_files`. Presents the target three-section record shape
-  (`version`/`provenance`/`contents`/`progress`) while reading and writing the v1
-  `sampler_state.pt` layout; Phase C deletes that translation. Creates `sample_path` lazily, so a
-  refused run leaves nothing behind. Its only state is `n_written`/`split_counts`.
+  `reconcile(contents)` / `refuse_orphan_files`. Record is format **2**, flat:
+  `version`+`contents` are the store's, `provenance`+`progress` pass through from the generator.
+  `contents` = `n_written`/`split_counts`/`offsets`/`digests`; `reconcile` truncates a torn tail
+  then verifies digests. A format-1 record is REFUSED with "regenerate", no migration. `digests()`
+  returns `None` for a zero-byte file whether it exists or not — an emptied file and an absent one
+  are the same zero structures. `save_record` re-reads all three files, so a huge dataset should
+  raise `state_interval`. Creates `sample_path` lazily, so a refused run leaves nothing behind.
+  Its only state is `n_written`/`split_counts`.
 - `datamodule.py` — `DistillationDataModule(ASEDataModule)`. Computes the 3 split paths in
   `__init__` and passes them to `ASEDataModule` before the files exist; `prepare_data()`
   generates. Requires `_recursive_: false` so hydra does not build the teacher eagerly. Sets
@@ -91,6 +95,8 @@ unused placeholder fields; `model/`, `nn/`, `train/` are README-only stub dirs.
 | rattle resume | works (truncate to recorded offset, continue) |
 | MD sampling | runs, but scaffolding — see `planning.md` §8 |
 | MD resume | REFUSES (base-class `NotImplementedError`) |
+| resume onto edited-but-same-length split files | REFUSES (digest check, format 2) |
+| resume from a pre-2026-09-18 dataset | REFUSES — format-1 record, regenerate |
 | resume w/ ANY sampler-config difference | REFUSES, incl. `calculator.device` — deliberate; `immutable_keys()` classification deferred to §11.10 |
 | growing a dataset + `ckpt_path` | **NO LONGER GUARDED** — guard died with the CLI, replacement deferred to §11.10 |
 | warm start on grown data | not implemented (D11 Path B) |

@@ -622,6 +622,30 @@ do not take its state away from it. A generator owning a rich, procedure-specifi
 correct; MD's state (positions, velocities, RNG bit generator, step count) is irreducible
 complexity that belongs to MD.
 
+### 11.1a Portability invariant (user, 2026-09-18)
+
+**Generation must never require a datamodule.** The datamodule is a caller, not the owner.
+
+Three reviewable properties, in order of how easy they are to check:
+
+1. `sample/`, `data/store.py`, `data/state.py` and `data/paths.py` import **no** nequip, hydra,
+   lightning or omegaconf. Grep-checkable, so it cannot rot quietly. Only `data/datamodule.py`
+   is allowed those.
+2. `Sampler.generate()` is the pipeline and stays there. A standalone script constructs a
+   generator and calls it — that is exactly the script used to verify the byte-identity claims
+   in Phases A and B, and it never touched the datamodule.
+3. Wherever coordination code sits, **the pipeline half must contain no `self`.** A
+   `prepare_data()` that spells the steps out is fine provided its body splits visibly into an
+   adapter half (hydra config -> objects, teacher lifecycle: legitimately datamodule-specific,
+   a script replaces it with direct construction) and a pipeline half that touches only local
+   variables and is therefore paste-able verbatim.
+
+**Known wart:** a standalone script must set `sampler.sampler_config` by hand or resume refuses
+with "was not given the config". That field exists only because hydra's `instantiate` would build
+the teacher twice if it were a constructor argument -- a datamodule concern leaking into the
+standalone path. The clean fix is for a generator to derive its own provenance from its
+constructor arguments instead of being handed a config dict. Not scheduled.
+
 ### 11.2 The record on disk — three sections, one writer each
 
 **The governing rule: each section has exactly one writer, and that writer is also its checker.**
@@ -725,6 +749,10 @@ data layer does the comparing and all the yelling.
 checks nothing; it only sequences.
 
 ### 11.4 The restart algorithm — the acceptance test for this design
+
+Shown below as a free function to make 11.1a's point: it names only `generator` and `store`, so
+it is paste-able into a script. Today it lives as `Sampler.generate()` and `prepare_data()` calls
+it; either placement is fine so long as no `self` appears in these lines.
 
 ```python
 def prepare_data(self):
@@ -869,20 +897,36 @@ a generic `diff_configs()`. Record still v1 shape; the `goal` section is now ass
 generator.
 - Check: `pytest -q`; resume-refusal messages unchanged in substance.
 
-**Phase C — record v2.** Three sections per 11.2. Store owns `contents` (offsets, digests,
-`n_written`, `split_counts`); generator's `state()`/`restore()` carry procedure progress only. Add
-content digests and verify-on-resume. v1 records get an explicit, actionable refusal — no silent
-migration. *(Open: the sandbox dataset would need regenerating. Cheap, but it is a GPU run.)*
-- Check: `pytest -q`; new tests for digest mismatch and v1 refusal.
+**Phase C — record v2.** DONE 2026-09-18. Three sections per 11.2, flat; the v1 translation is
+deleted and a format-1 record gets a refusal that says to regenerate rather than a generic
+unknown-format message. `contents` gains a per-split `digests`, checked by `reconcile` after
+truncation.
 
-**Phase D — orchestration moves to the datamodule.** `prepare_data()` becomes 11.4 verbatim.
-`Sampler.generate()` becomes a thin compat wrapper or is deleted (see the open question below).
-`attach_calculator()` lands; `label()` extracted per 11.7.
-- Check: `pytest -q`; `pytest -m e2e`.
+Two things learned here:
+- **An empty split file and an absent one must digest the same.** Truncating back to offset zero
+  leaves a file that exists and is empty, while a record written before that split was ever
+  touched has `None` for it. Hashing the empty file gives sha256("") and a perfectly good resume
+  gets refused as a content mismatch. `digests()` returns `None` for zero bytes, absent or not.
+  Found by the existing resume tests, not by inspection.
+- **`save_record` re-reads all three files.** Quadratic in the number of checkpoints. At the scale
+  here -- hundreds of structures, a megabyte or two, a teacher call per structure -- it is
+  microseconds. A large dataset should raise `state_interval`. An incremental hash carried across
+  appends would fix the asymptotics and was rejected as optimising for a size nobody runs.
+
+**Phase D — remove the duplicated restore path.** `attach_calculator()` lands, so the datamodule
+stops instantiating the generator twice to avoid loading the teacher, and
+`_finished_without_teacher` stops repeating what `resume_from` already does. `label()` extracted
+per 11.7.
+
+**`Sampler.generate()` STAYS** (user, 2026-09-18). An earlier draft of this phase had
+`prepare_data()` absorb the loop and `generate()` deleted; that would make nequip a hard
+dependency of generating data and breaks 11.1a. The datamodule remains a caller.
+- Check: `pytest -q`; `pytest -m e2e`; 11.1a property 1 still greps clean.
 
 **Phase E — rename.** `Sampler` → `Generator`, `RattleSampler` → `RattleGenerator`, `MDSampler` →
-`MDGenerator`, old names kept as aliases. `sampler_state.pt` → `generation_state.pt`. Examples,
-`configs/`, and `docs/tutorial/` updated. Error messages say "generator".
+`MDGenerator`, old names kept as aliases. `sampler_state.pt` → `generation_state.pt` (free now:
+format 2 already refuses every older record, so the filename carries no compatibility weight).
+Examples and `docs/tutorial/` updated. Error messages say "generator".
 - Check: `pytest -q`; `pytest -m e2e`.
 
 **Phase 0 (done, 2026-09-18) — `nequip-distill` deleted.** User's call: delete outright, with no

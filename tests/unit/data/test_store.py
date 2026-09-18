@@ -1,10 +1,7 @@
 """Contract tests for `SampleStore`.
 
-Two of these matter more than the rest: `SampleStore` must read a record that the
-existing `Sampler` wrote, and `Sampler` must read a record that `SampleStore` wrote.
-Phase A only earns its keep if the on-disk format is untouched, so both directions are
-checked against the real `Sampler` payload builders rather than against a hand-written
-dict, which would only prove the test and the store share a misunderstanding.
+The round-trip tests go through the real `Sampler` rather than a hand-written record,
+so that they cannot pass by sharing a misunderstanding with the store.
 """
 
 import torch
@@ -93,22 +90,22 @@ def test_record_round_trips_through_the_three_section_shape(tmp_path):
     assert record["contents"]["offsets"] == store.offsets()
 
 
-def test_saved_record_has_the_version_1_layout_on_disk(tmp_path):
-    """Checked on the raw dict, because the round-trip test cannot see this.
+def test_saved_record_has_the_three_section_layout_on_disk(tmp_path):
+    """Checked on the raw dict, because the round-trip test cannot see the layout.
 
-    The class name belongs in the header under version 1 and in provenance under the
-    new shape. Writing it to both places round-trips fine and is still wrong: it
-    changes the bytes of every record, which Phase C would then have to migrate.
+    One section per writer: `version` and `contents` are the store's, `provenance` and
+    `progress` are the generator's and pass through untouched.
     """
     store = SampleStore(tmp_path / "ds")
     store.append(frame(0.0), "train")
-    store.save_record({"generator_class": "pkg.Rattle", "config": {"seed": 1}}, {})
+    store.save_record({"generator_class": "pkg.Rattle", "config": {"seed": 1}}, {"n": 1})
 
     raw = torch.load(store.record_file, weights_only=False)
-    assert set(raw) == {"version", "sampler_class", "goal", "progress"}
-    assert raw["sampler_class"] == "pkg.Rattle"
-    assert raw["goal"] == {"config": {"seed": 1}}
-    assert set(raw["progress"]) == {"n_written", "split_counts", "offsets", "procedure"}
+    assert set(raw) == {"version", "provenance", "contents", "progress"}
+    assert raw["version"] == STATE_VERSION
+    assert raw["provenance"] == {"generator_class": "pkg.Rattle", "config": {"seed": 1}}
+    assert raw["progress"] == {"n": 1}
+    assert set(raw["contents"]) == {"n_written", "split_counts", "offsets", "digests"}
 
 
 def test_load_record_refuses_an_unknown_format(tmp_path):
@@ -119,10 +116,10 @@ def test_load_record_refuses_an_unknown_format(tmp_path):
         SampleStore(path).load_record()
 
 
-# ------------------------------------------- version-1 format compatibility
+# ---------------------------------------------- round trip via the sampler
 
 def test_store_reads_a_record_the_sampler_wrote(tmp_path):
-    """The direction that keeps datasets generated before the refactor usable."""
+    """What the generator put in provenance comes back out unchanged."""
     sample_path = tmp_path / "ds"
     sampler = bare_sampler(tmp_path, sample_path)
     sampler.append(frame(0.0), "train")
@@ -184,6 +181,7 @@ def test_reconcile_refuses_a_file_shorter_than_recorded(tmp_path):
         "n_written": 1,
         "split_counts": {"train": 1, "val": 0, "test": 0},
         "offsets": dict(store.offsets(), train=store.offsets()["train"] + 500),
+        "digests": store.digests(),
     }
     with pytest.raises(ValueError, match="shorter than"):
         SampleStore(tmp_path / "ds").reconcile(contents)
@@ -196,11 +194,72 @@ def test_reconcile_leaves_the_counters_alone_when_it_refuses(tmp_path):
         "n_written": 99,
         "split_counts": {"train": 99, "val": 0, "test": 0},
         "offsets": dict(store.offsets(), train=store.offsets()["train"] + 500),
+        "digests": store.digests(),
     }
     fresh = SampleStore(tmp_path / "ds")
     with pytest.raises(ValueError):
         fresh.reconcile(contents)
     assert fresh.n_written == 0
+
+
+def test_reconcile_refuses_content_that_is_the_right_length_and_wrong_bytes(tmp_path):
+    """Offsets cannot catch this; it is the whole reason digests are recorded."""
+    store = SampleStore(tmp_path / "ds")
+    store.append(frame(0.0), "train")
+    store.save_record({"generator_class": "pkg.X"}, {})
+    recorded = store.load_record()["contents"]
+
+    # same byte count, different structure
+    path = store.split_file("train")
+    swapped = path.read_bytes()
+    path.write_bytes(swapped[:-2] + b"9\n")
+    assert path.stat().st_size == recorded["offsets"]["train"]
+
+    with pytest.raises(ValueError, match="not the recorded content"):
+        SampleStore(tmp_path / "ds").reconcile(recorded)
+
+
+def test_reconcile_accepts_an_empty_file_recorded_as_absent(tmp_path):
+    """Truncating back to offset zero leaves a file that exists and is empty.
+
+    The record, written before that split was ever touched, has `None` for it. Those
+    are the same zero structures and must not be read as a content mismatch.
+    """
+    store = SampleStore(tmp_path / "ds")
+    store.append(frame(0.0), "train")
+    store.save_record({"generator_class": "pkg.X"}, {})
+    recorded = store.load_record()["contents"]
+    assert recorded["digests"]["test"] is None
+
+    store.append(frame(1.0), "test")          # a split the record knows nothing about
+    fresh = SampleStore(tmp_path / "ds")
+    fresh.reconcile(recorded)                 # truncates test.extxyz to empty
+    assert fresh.split_file("test").exists()
+    assert fresh.n_written == 1
+
+
+# ------------------------------------------------- refusing older formats
+
+def test_load_record_refuses_a_format_1_record(tmp_path):
+    """The pre-refactor layout. No migration: contents and digests are not in it."""
+    path = tmp_path / "ds"
+    path.mkdir()
+    torch.save(
+        {
+            "version": 1,
+            "sampler_class": "pkg.Rattle",
+            "goal": {"config": {"seed": 1}, "base_frames": "a1b2"},
+            "progress": {
+                "n_written": 1,
+                "split_counts": {"train": 1, "val": 0, "test": 0},
+                "offsets": {"train": 10, "val": 0, "test": 0},
+                "procedure": {},
+            },
+        },
+        path / STATE_FILE,
+    )
+    with pytest.raises(ValueError, match="format-1 record"):
+        SampleStore(path).load_record()
 
 
 # ------------------------------------------------------------------ orphans
