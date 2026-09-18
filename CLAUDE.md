@@ -6,13 +6,18 @@ demand, don't duplicate it here.
 
 ## Purpose
 
-`nequip` extension package. Ships ONE new CLI: **`nequip-distill`**. Given a teacher artifact
-loadable as an ASE calculator + base frame(s): **sample** frames (rattle or ASE MD) → **label**
-with the teacher → **train** a student via `nequip.scripts.train.main()`.
+`nequip` extension package. Ships NO CLI of its own — the user runs plain **`nequip-train`**, and
+the package contributes a `data:` datamodule. Given a teacher artifact loadable as an ASE
+calculator + base frame(s): **sample** frames (rattle or ASE MD) → **label** with the teacher →
+hand the generated splits to nequip's ordinary training.
 
 Finetuning is OUT OF SCOPE (nequip core does it). Scope is a hackathon one-off being cleaned up
 for shipping, NOT a broad extensible framework — reject abstraction that only pays off
-hypothetically. One command, one config; a design needing two of either is rejected.
+hypothetically.
+
+**Mid-refactor.** The boundary is being redrawn: physical (bytes on disk) vs semantic (science
+and resume position). `planning.md` §11 is the spec and the phase plan — read it before touching
+`sample/` or `data/`.
 
 ## Working paradigm (READ FIRST, every step)
 
@@ -50,16 +55,18 @@ scratch in small approved steps.
   `policy` = `"scattered"` (torch shuffle) or `"blocked"` (contiguous train→val→test ranges).
 - `__init__.py` — exports `Sampler`, `RattleSampler`, `MDSampler`.
 
-`nequip_extension_template/scripts/distill.py` (221) — hydra entry,
-`@hydra.main(version_base=None, config_path=os.getcwd(), config_name="config")`, same shape as
-`nequip.scripts.train.main`. `run` = optional `sample` (first, at most once) + any of
-`train`/`val`/`test`; the tail goes to `nequip.scripts.train.main(train_config)` in-process.
-Helpers: `_split_run_list`, `_check_train_config` (runs BEFORE sampling), `_dataset_files`,
-`_require_dataset` (no-`sample` runs need 3 non-empty files; the sampler is NOT built — would
-load the teacher onto a GPU for nothing), `_train_config`, `_release_teacher`.
-Sets `sampler.sampler_config = OmegaConf.to_container(config.sampler, resolve=True)` AFTER
-`instantiate` — NOT as a ctor arg, `instantiate` recurses into args hunting `_target_` and would
-build the teacher twice.
+`nequip_extension_template/data/`
+- `paths.py` — `SPLITS`, `split_file(sample_path, split)`.
+- `state.py` — the physical layer: `STATE_FILE`/`STATE_VERSION`, `frames_digest`, `flatten`,
+  `split_offsets`, atomic `read_state`/`write_state`, `check_state_header`, `check_goal`,
+  `truncate_to`, `refuse_existing_split_files_without_state`. `check_goal` still takes
+  `base_frames` — a semantic leak that Phase B moves to the generator (`planning.md` §11.8).
+- `datamodule.py` — `DistillationDataModule(ASEDataModule)`. Computes the 3 split paths in
+  `__init__` and passes them to `ASEDataModule` before the files exist; `prepare_data()`
+  generates. Requires `_recursive_: false` so hydra does not build the teacher eagerly. Sets
+  `sampler.sampler_config` AFTER `instantiate` — NOT as a ctor arg, `instantiate` recurses into
+  args hunting `_target_` and would build the teacher twice. Has a no-teacher fast path:
+  instantiate with `calculator=None`, check/restore state, return if `finished`.
 
 Leftovers from the upstream template, delete or replace when touched: `_keys.py` registers two
 unused placeholder fields; `model/`, `nn/`, `train/` are README-only stub dirs.
@@ -70,13 +77,14 @@ unused placeholder fields; `model/`, `nn/`, `train/` are README-only stub dirs.
 |---|---|
 | rattle sampling | works, GPU-validated, deterministic per structure |
 | 3-file split output | works; splits frozen at generation |
-| student training in-process | works, GPU-validated end to end |
+| student training via `nequip-train` | works, e2e-covered; GPU-validated on the old CLI path |
 | rattle resume | works (truncate to recorded offset, continue) |
 | MD sampling | runs, but scaffolding — see `planning.md` §8 |
 | MD resume | REFUSES (base-class `NotImplementedError`) |
-| resume w/ ANY sampler-config difference | REFUSES, incl. `calculator.device` — deliberate, §9 #1 |
-| growing a dataset + `ckpt_path` | REFUSES (D11 trap guard) |
+| resume w/ ANY sampler-config difference | REFUSES, incl. `calculator.device` — deliberate; classification deferred to §11.10 |
+| growing a dataset + `ckpt_path` | **NO LONGER GUARDED** — guard died with the CLI, replacement deferred to §11.10 |
 | warm start on grown data | not implemented (D11 Path B) |
+| MD under the datamodule | untested, no example |
 | `student_path` / stable checkpoint dir | not implemented (D15) |
 | parallel sweeps into one `sample_path` | unsafe, no lock |
 | compiled `.pt2` teacher | segfaults; use packaged `.nequip.zip` |
@@ -87,20 +95,18 @@ unused placeholder fields; `model/`, `nn/`, `train/` are README-only stub dirs.
 CONDA=/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311
 export LD_LIBRARY_PATH=$CONDA/lib:${LD_LIBRARY_PATH:-}
 # from repo root; hydra does NOT chdir, so relative paths resolve to launch cwd
-$CONDA/bin/nequip-distill -cp $PWD/examples -cn rattle_train   # sample + train + val + test
-$CONDA/bin/nequip-distill -cp $PWD/examples -cn rattle_only    # sample only
-$CONDA/bin/nequip-distill -cp $PWD/examples -cn md_only
+$CONDA/bin/nequip-train -cp $PWD/examples -cn rattle_train_datamodule
 ```
 
 - **`-cp` MUST be absolute.** Hydra resolves a relative `--config-path` against the DECORATED
   FUNCTION'S MODULE, so `-cp testartifacts` fails with `Primary config module
-  'nequip_extension_template.scripts.testartifacts' not found`. `nequip-train` has the same trap.
-  Auto-absolutizing it in a wrapper was proposed and REJECTED (user).
-- `nequip-distill --help` FAILS with no `config.yaml` in cwd (hydra composes before help); use
-  `-cp ... -cn ... --cfg job` to inspect a resolved config instead.
-- On PATH because the repo is `pip install -e . --no-deps --no-build-isolation` into nequip311.
-  Editable, so edits are live; re-run only if entry points change. Needed `license = {file =
-  "LICENSE"}` dropped from `pyproject.toml` first — no LICENSE file exists.
+  'nequip.scripts.configs' not found`. Auto-absolutizing it in a wrapper was proposed and
+  REJECTED (user).
+- **`ckpt_path: null` must NOT appear.** nequip tests for the KEY's presence, not its value, so a
+  null value sends the run down the restart path with nothing to load. Omit it entirely.
+- Installed `pip install -e . --no-deps --no-build-isolation` into nequip311. Editable, so edits
+  are live. Needed `license = {file = "LICENSE"}` dropped from `pyproject.toml` first — no
+  LICENSE file exists.
 - **All real runs go through Slurm (user explicit, never the login node.)** Smoke-scale sampler
   tests are fine on login.
 - `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` fixes `GLIBCXX_3.4.31 not found`.
@@ -110,7 +116,7 @@ $CONDA/bin/nequip-distill -cp $PWD/examples -cn md_only
 ```bash
 pytest                                      # default suite, excludes e2e
 pytest tests/integration                   # resume/integration tests
-pytest -m e2e                              # CLI subprocess suite, 15 cases, ~4 min
+pytest -m e2e                              # nequip-train subprocess suite, 7 tests
 ```
 
 Both CPU only, NO teacher, NO GPU — a correctness decision, not just speed (user explicit).
@@ -119,33 +125,33 @@ file hashes, which also catches a dropped, duplicated or mis-filed structure. **
 NOT a valid criterion whenever the teacher runs on GPU** — see `planning.md` §6 for the measured
 nondeterminism and the tolerance-based check to use instead.
 
-- `tests/integration/sample/test_resume.py` — resume machinery. Helpers: `build(...)` mirrors what `distill.py` does
-  (the same settings both construct the sampler AND become `sampler_config`); `kill_after(sampler,
-  n)` wraps `step` to raise after exactly n appends, so the kill lands at a known point.
-  Mutation-checked: `truncate_to` → no-op ⇒ 2 failures; rattle `restore_progress` forgets
-  `n_steps` ⇒ 3; `check_goal` early-return ⇒ 3.
-- `tests/e2e/test_distill_cli.py` — the CLI end to end, marked `e2e` and `slow`.
-  Each case writes a config and runs `python -m nequip_extension_template.scripts.distill` as a
-  SUBPROCESS — `@hydra.main` owns global state and does not survive two calls in one interpreter.
-  `hydra.run.dir` is pinned per case so assertions can look inside it. 10 synthetic 32-atom fcc
+- `tests/integration/sample/test_resume.py` — resume machinery. Helpers: `build(...)` mirrors what
+  `DistillationDataModule` does (the same settings both construct the sampler AND become
+  `sampler_config`); `kill_after(sampler, n)` wraps `step` to raise after exactly n appends, so
+  the kill lands at a known point. Mutation-checked: `truncate_to` → no-op ⇒ 2 failures; rattle
+  `restore_progress` forgets `n_steps` ⇒ 3; `check_goal` early-return ⇒ 3.
+- `tests/e2e/test_datamodule_e2e.py` — ordinary pytest tests (no case registry), marked `e2e` and
+  `slow`. Each writes a config and runs `python -m nequip.scripts.train` as a SUBPROCESS —
+  `@hydra.main` owns global state and does not survive two calls in one interpreter.
+  `hydra.run.dir` is pinned per test so assertions can look inside it. 10 synthetic 32-atom fcc
   argon cells (fcc, NOT random positions — random points in a box overlap atoms and LJ energies
   explode); student = 1 layer, `l_max: 0`, `num_features: 8`, 2 epochs, `accelerator: cpu`.
-  Covers 7 refusals, sample-only + byte-identical re-run, full pipeline, two students on one
-  dataset, train-only with a deliberately broken calculator target (proves no sampler is built),
-  `ckpt_path: null`, checkpoint restart, the D11 refusal. Mutation-checked, 3 mutations.
+  Covers: full pipeline, two students on one dataset byte-identical, **the no-teacher fast path**
+  (a LennardJones subclass that touches a marker file when constructed — the teacher config is
+  provenance, so breaking its `_target_` would trip the settings-changed refusal instead of
+  proving anything), `split_dataset` refusal, explicit `*_file_path` refusal, broken student
+  config refused before generation, checkpoint restart.
 
 ## Examples And Local Artifacts
 
-Tracked example configs: `examples/rattle_only.yaml`, `examples/md_only.yaml`,
-`examples/rattle_train.yaml`. Local-only inputs and generated outputs live under gitignored
-`sandbox/` paths in those examples. `testartifacts/` has been retired.
-- `rattle_train.yaml` — the FULL config: `run: [sample, train, val, test]`, rattle half copied
-  from `rattle_only.yaml`, student half = `ASEDataModule` + `EMALightningModule` +
-  `NequIPGNNModel` (2 layers, `l_max: 1`, `num_features: [32, 16]`, `r_max: 6.0` — the CDP student
-  arch from `../distillation/config/base.yaml`), CSVLogger, `max_epochs: 20`, `ModelCheckpoint
-  (dirpath=${hydra:runtime.output_dir}, filename=best, save_last=true)`. Its `data:` block
-  deliberately has NO `*_file_path` and NO `split_dataset` — `distill.py` fills those in.
-  50 structures → 40/5/5.
+ONE tracked example config: `examples/rattle_train_datamodule.yaml` — `run: [train, val, test]`,
+`data:` = `DistillationDataModule` with `_recursive_: false`, `teacher:` and `generation:`; student
+= `EMALightningModule` + `NequIPGNNModel` (2 layers, `l_max: 1`, `num_features: [32, 16]`,
+`r_max: 6.0` — the CDP student arch from `../distillation/config/base.yaml`), CSVLogger,
+`ModelCheckpoint(dirpath=${hydra:runtime.output_dir}, filename=best, save_last=true)`, and NO
+`ckpt_path` key at all. Local-only inputs and generated outputs live under gitignored `sandbox/`
+paths. `testartifacts/` and `configs/` have been retired. **No MD example any more** — the CLI-era
+`md_only.yaml` went with the CLI and MD has not been ported to the datamodule.
 - `sandbox/inputs/teacher.nequip.zip` — THE teacher, packaged (not compiled). Copied from
   `../distillation/results/CDP/student_direct/S1b/n200_seed1/model.nequip.zip`.
 - `sandbox/inputs/teacher.nequip.pt2` — the segfaulting compiled one, kept as evidence only.
@@ -164,10 +170,12 @@ no longer useful.
 - `pyproject.toml` placeholders: `description = "TODO"`, `authors = [{name = "your name here"}]`.
   No LICENSE file.
 - `README.md` is a scaffold with empty sections — **user writes the prose, do not fill it in.**
-- `configs/distill_template.yaml` is STALE (predates the `split_policy`/3-file design; don't trust
-  its `sampler:` shape). `examples/*.yaml` are the current source of truth for runnable configs.
-- `tests/e2e/test_distill_cli.py` still carries a case registry from the old smoke script; split it
-  into ordinary pytest tests when touched.
+- `README.md` and `docs/tutorial/` still describe the deleted `nequip-distill` CLI. The tutorial
+  is SHIPPED (public Colab link) and is therefore BROKEN until its config and section are ported
+  to the `nequip-train` path — user's call, not yet made. Never run the tutorial locally.
+- The D11 guard (growing a dataset + `ckpt_path` silently under-trains) went with the CLI. Its
+  replacement is the datamodule checkpoint fingerprint, deferred to `planning.md` §11.10. User
+  accepted this window knowingly.
 - `.pre-commit-config.yaml` exists (ruff line-length 88 double quotes, yamllint, whitespace,
   `fail_fast: true`) but no hook is installed in `.git/hooks/`, and ruff is not in nequip311
   (`No module named ruff`). Lint by hand before committing.

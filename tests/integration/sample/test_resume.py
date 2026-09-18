@@ -81,7 +81,7 @@ def frames(tmp_path_factory):
 def build(path, base_frames, sampler_class=RattleSampler, defaults=None, **overrides):
     """A sampler plus the config record it would have been built from.
 
-    Mirrors what `nequip-distill` does: the same settings both construct the sampler
+    Mirrors what `DistillationDataModule` does: the same settings both construct the sampler
     and are handed to it as the config, which it stores and later compares against.
     Tests that change a setting change it in one place and get both.
     """

@@ -866,9 +866,26 @@ migration. *(Open: the sandbox dataset would need regenerating. Cheap, but it is
 `configs/`, and `docs/tutorial/` updated. Error messages say "generator".
 - Check: `pytest -q`; `pytest -m e2e`.
 
-**Open question, needs the user's call before Phase D:** does `nequip-distill` survive? Options are
-(i) keep it as sugar that instantiates `data` and calls `prepare_data()`, (ii) reduce it to a
-migration error, (iii) delete it. This decides how much of the 15-case e2e CLI suite churns.
+**Phase 0 (done, 2026-09-18) — `nequip-distill` deleted.** User's call: delete outright, with no
+generate-only replacement for now. Removed `scripts/distill.py` and its entry point, `configs/`,
+and the three CLI-driven examples; `tests/e2e/test_distill_cli.py` became
+`tests/e2e/test_datamodule_e2e.py`, 16 registry cases down to 7 ordinary pytest tests.
+
+Consequences, accepted knowingly:
+- **The D11 guard is gone.** Growing a dataset and passing `ckpt_path` now silently under-trains
+  the new structures until the checkpoint fingerprint lands (11.10). User accepted the window.
+- **No sample-without-training path exists.** Revisit if generating on a GPU node and sweeping
+  students elsewhere becomes a real workflow.
+- **`docs/tutorial/` and `README.md` still document the deleted CLI.** The tutorial is shipped via
+  a public Colab link, so it is broken until ported. Not yet decided.
+
+Two things the rewrite verified rather than assumed:
+- **nequip validates the student config before Lightning calls `prepare_data()`**, so the old
+  CLI's "fail before burning teacher calls" guarantee survives for free. Covered by
+  `test_broken_student_config_fails_before_generating`.
+- **The teacher config is provenance**, so the no-teacher fast path cannot be tested by breaking
+  the teacher's `_target_` — that trips the settings-changed refusal instead. It is tested with a
+  LennardJones subclass that touches a marker file when constructed.
 
 ### 11.10 Deferred, after the boundary is stable
 

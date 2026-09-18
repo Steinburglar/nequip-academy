@@ -1,4 +1,4 @@
-"""Sampling procedures for ``nequip-distill``."""
+"""Sampling procedures driven by ``DistillationDataModule``."""
 
 from .md import MDSampler
 from .rattle import RattleSampler

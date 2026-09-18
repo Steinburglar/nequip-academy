@@ -16,7 +16,7 @@ so the label is already in hand. Splitting them would either pay the teacher twi
 require a cache across the seam.
 
 A run writes down what it has done, to ``sampler_state.pt`` beside the dataset, and
-reads it back if it finds one: pointing ``nequip-distill`` at a ``sample_path`` that
+reads it back if it finds one: pointing ``sample_path`` at a directory that
 already holds a dataset continues that dataset rather than refusing it.
 
 The record holds two separate things, and keeping them separate is the point:
@@ -69,7 +69,7 @@ class Sampler:
         Path to a file ASE can read, holding the structure(s) the procedure starts
         from. These may carry labels of their own; those labels are not used and do not reach the output.
     sample_path
-        Output directory. Passed in by the ``nequip-distill`` script from the
+        Output directory. Passed in by ``DistillationDataModule`` from the
         top-level ``sample_path`` config key, not from the ``sampler`` section.
     state_interval
         How many structures to append between writes of the progress record. The
@@ -94,7 +94,7 @@ class Sampler:
         self.n_written = 0
         self.n_resumed = 0
         self.split_counts = {s: 0 for s in SPLITS}
-        # Set by the `nequip-distill` script, which is what has the config. Not a
+        # Set by `DistillationDataModule`, which is what has the config. Not a
         # constructor argument: hydra's `instantiate` recurses into the arguments it
         # is handed looking for things to build, and this dict contains the
         # calculator's own config, so passing it that way would load the teacher

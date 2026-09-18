@@ -33,7 +33,7 @@ version = {attr = "nequip_extension_template._version.__version__"}
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The suite is deliberately CPU-only and teacher-free. E2E tests exercise
-# nequip-distill as a subprocess with a Lennard-Jones teacher and are opt-in.
+# `nequip-train` as a subprocess with a Lennard-Jones teacher and are opt-in.
 addopts = "-q -m 'not e2e'"
 markers = [
     "integration: tests that exercise multiple project components",
@@ -62,9 +62,6 @@ ignore = ["E226", "E501", "E741", "E743", "C901", "E203"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-
-[project.scripts]
-nequip-distill = "nequip_extension_template.scripts.distill:main"
 
 [project.entry-points."nequip.extension"]
 init_always = "nequip_extension_template"

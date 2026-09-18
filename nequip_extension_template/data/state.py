@@ -111,7 +111,7 @@ def check_goal(
         raise ValueError(
             f"{sample_path} holds a dataset from an earlier run, but this sampler was "
             "not given the config it is being asked to continue, so there is nothing "
-            "to compare against. The `nequip-distill` script supplies it; a sampler "
+            "to compare against. `DistillationDataModule` supplies it; a sampler "
             "built directly in a script must set `sampler_config` itself."
         )
     live = flatten(live_config)

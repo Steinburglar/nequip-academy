@@ -11,7 +11,7 @@ sampling interval is long enough to decorrelate consecutive snapshots.
 
 The apportionment itself is ``torch.utils.data.random_split`` -- floor each fraction,
 distribute the remainder round-robin. That is also what nequip's own splitting uses
-(``nequip/data/dataset/utils.py``), so a ``nequip-distill`` split and a
+(``nequip/data/dataset/utils.py``), so a generated split and a
 ``nequip-train`` split produce the same sizes. Only *which* items land where differs,
 by policy:
 
