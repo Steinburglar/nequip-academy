@@ -167,3 +167,6 @@ sandbox/
 
 # scratch script for the curiosity cluster, not part of the repo
 curiosity_distill.sbatch
+
+# external repos cloned for prior-art reading, not part of this package
+.agents/

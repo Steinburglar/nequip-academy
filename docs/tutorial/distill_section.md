@@ -1,3 +1,8 @@
+> **DEPRECATED — DOES NOT RUN.** This section drives `nequip-distill`, a CLI that was
+> deleted on 2026-09-18. The package now contributes a `data:` datamodule to plain
+> `nequip-train` instead; see `planning.md` §11. Port this section and `distill.yaml`
+> once the refactor settles.
+
 # Distillation section — draft
 
 Cells to append to `NequIP_Tutorial.ipynb` after the fine-tuning section. Kept
