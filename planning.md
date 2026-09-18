@@ -597,27 +597,159 @@ Worth reporting upstream.
 
 ---
 
-## 11. Proposed datamodule port (2026-09-16)
+## 11. Datamodule port + generation refactor
 
-Prompt from user/lab discussion: the distillation package may fit NequIP better if sampling lives
-inside the `data:` section as a custom datamodule, rather than as a separate top-level `sampler`
-driven by `nequip-distill` before handing paths to `ASEDataModule`.
+*Rewritten 2026-09-18. Supersedes the 2026-09-16 version of this section, which described the
+same destination in terms the user could not build intuition from ("generator only delivers the
+next frame"). The structures below are close to what that version proposed; the ownership story
+is the part that changed.*
 
-**Assessment.** This is likely the more natural long-term boundary. A Dataset could technically
-yield generated frames, but the lifecycle is too broad for `__getitem__`: teacher loading/release,
-materialization, restart safety, train/val/test ownership, provenance checks, distributed setup,
-and checkpoint compatibility all belong at the DataModule layer. The Dataset should stay boring:
-read already-materialized data and apply normal NequIP transforms.
+### 11.1 The boundary, in one picture
 
-### Target user-facing shape
+The old `Sampler` (429 lines) held two unrelated jobs. Almost all of its bulk is job 1:
 
-Primary path should become ordinary NequIP training:
+- **Physical** — "does the byte content on disk match the record?" Offsets, sizes, truncation,
+  digests, atomic write. *Zero generator knowledge.* Universal for every procedure, forever.
+- **Semantic** — "would this config have produced these frames, and where in the procedure am I?"
+  Provenance rules, resume position, finished-ness. *Entirely generator-owned.*
+
+Everything below follows from cutting there and nowhere else.
+
+**The generator's size was never the problem.** `rattle.py` is 212 lines and is essentially pure
+science; `sampler.py` is 429 and is essentially all file mechanics. Extract the physical layer and
+the generator is already small. Do NOT invent further abstractions to shrink it — in particular,
+do not take its state away from it. A generator owning a rich, procedure-specific state dict is
+correct; MD's state (positions, velocities, RNG bit generator, step count) is irreducible
+complexity that belongs to MD.
+
+### 11.2 The record on disk — three sections, one writer each
+
+**The governing rule: each section has exactly one writer, and that writer is also its checker.**
+This is the intuition the whole design hangs on.
+
+```python
+{
+    "version": 2,
+    "generator_class": "nequip_extension_template.sample.RattleGenerator",
+    "provenance": {...},   # generator writes, generator checks
+    "contents":   {...},   # store writes, store checks
+    "progress":   {...},   # generator writes, generator restores
+}
+```
+
+| section | contents | writer / checker | why there |
+|---|---|---|---|
+| header | `version`, `generator_class` | store | guards on the record file itself; must be trusted before anything else may interpret it |
+| `provenance` | immutable settings, base-frame digest, teacher identity | generator | only the generator knows which knobs are load-bearing |
+| `contents` | per-split byte `offsets`, per-split `digests`, `n_written`, `split_counts` | store | only the store touches bytes |
+| `progress` | procedure position (rattle `n_steps`; MD positions/velocities/RNG) | generator | procedure-specific by nature |
+
+Offsets and digests are deliberately **not** part of generator progress. If they were, `state()`
+would have to produce them, which forces generator code to know about byte offsets — precisely the
+leak being removed. They are also not provenance: provenance is fixed for the dataset's life,
+contents change at every checkpoint. Different lifetimes, different sections.
+
+`n_written` / `split_counts` are store counters, because the store is what appends. Generators may
+keep their own counters, meaning "where I am in the procedure". For rattle the two agree by
+construction; a disagreement is a detectable bug (optional check, not load-bearing).
+
+**One file, not several** (settled). The sections must be written atomically *together* — a torn
+pair of files is strictly worse than a torn single file. `store.save_record(provenance=...,
+progress=...)` injects `contents` itself and does one `torch.save` + `os.replace`.
+
+### 11.3 The three components
+
+```text
+nequip_extension_template/
+  data/
+    paths.py        SPLITS, split_file()                    [exists]
+    state.py        record I/O, diff mechanism, truncation  [exists, needs one fix — 11.8]
+    store.py        SampleStore                             [to add]
+    datamodule.py   DistillationDataModule                  [exists, thin]
+  sample/
+    sampler.py      Generator base                          [to shrink]
+    rattle.py       RattleGenerator                         [science only]
+    md.py           MDGenerator                             [science only]
+    split.py        split assignment policy                 [unchanged]
+```
+
+**1. `SampleStore`** — the thin I/O object. Owns `sample_path` and, conceptually, nothing else.
+
+```python
+append(atoms, split)                 # write, track offsets + counts
+offsets() / counts()
+save_record(provenance, progress)    # atomic; injects `contents`
+load_record(expected_class)          # None | record; checks header
+verify_and_repair()                  # sizes vs offsets, truncate excess, then digests
+refuse_orphan_files()                # split files with no record
+```
+
+`verify_and_repair()` does trim-then-recheck in one call, because the order is forced: a torn tail
+must be cut *before* digests can match.
+
+**2. `Generator`** — the science, and its own state.
+
+```python
+provenance()          -> dict    # what defines "the same run"
+immutable_keys()      -> set     # which of those may not change
+state()               -> dict    # resume position
+restore(state)        -> None    # put me back there
+finished              -> bool
+attach_calculator(c)  -> None
+step(store)           -> None    # produce next structure(s); store.append(...)
+```
+
+A generator never implements a safeguard. It only *declares* which knobs are load-bearing; the
+data layer does the comparing and all the yelling.
+
+**3. `DistillationDataModule`** — owns the restart algorithm and nothing else. Writes nothing,
+checks nothing; it only sequences.
+
+### 11.4 The restart algorithm — the acceptance test for this design
+
+```python
+def prepare_data(self):
+    store = SampleStore(self.sample_path)
+    generator = instantiate(self.generation)        # teacher NOT loaded yet
+    record = store.load_record(expected_class=qualname(generator))
+
+    if record is None:
+        store.refuse_orphan_files()
+    else:
+        generator.check_compatible(record["provenance"])   # (a) semantic, cheapest, first
+        store.verify_and_repair()                          # (b)+(c) physical: trim, then digest
+        generator.restore(record["progress"])              # (d)
+        if generator.finished:
+            return                                         # teacher never loaded
+
+    generator.attach_calculator(instantiate(self.teacher))
+    run(generator, store, self.state_interval)
+```
+
+Order is load-bearing: the semantic check is cheap and runs first, so a config mismatch never
+causes a truncation. **If this function stops reading like that checklist, the boundary is wrong.**
+
+### 11.5 Splitting the checks — mechanism vs policy
+
+The apparent tension ("some checks are generator-specific") dissolves one level down:
+
+| check | mechanism (data layer) | policy (generator) |
+|---|---|---|
+| config compatibility | `diff_configs(stored, live, immutable_keys)` | supplies `immutable_keys` |
+| base-frame identity | `frames_digest()` | decides that base frames *are* provenance |
+| size vs offsets, truncation | total | none |
+| content digests | total | none |
+| resume position | serialize/restore contract | supplies + consumes the dict |
+| record format version | total | none |
+| generator class match | total (caller supplies expected) | none |
+
+### 11.6 Target user-facing shape (settled, already implemented)
+
+Primary path is ordinary NequIP training — no bespoke CLI:
 
 ```bash
 nequip-train -cp /abs/path/to/configs -cn distill
 ```
-
-with distillation configured under `data:`:
 
 ```yaml
 run: [train, val, test]
@@ -647,328 +779,138 @@ data:
     max_displacement_ang: 0.25
     seed: 1
 
-  transforms:
-    - _target_: nequip.data.transforms.ChemicalSpeciesToAtomTypeMapper
-      model_type_names: ${model_type_names}
-    - _target_: nequip.data.transforms.NeighborListTransform
-      r_max: ${cutoff_radius}
-
-  train_dataloader:
-    _target_: torch.utils.data.DataLoader
-    batch_size: 5
-    num_workers: 4
-    shuffle: true
-  val_dataloader:
-    _target_: torch.utils.data.DataLoader
-    batch_size: 10
-    num_workers: 4
-  test_dataloader: ${data.val_dataloader}
+  transforms: [...]          # ordinary NequIP
+  train_dataloader: {...}    # ordinary NequIP
 ```
 
-`_recursive_: false` is load-bearing: without it Hydra may instantiate `teacher` during
-DataModule construction, which loads the teacher too early and possibly when generation is already
-complete. The datamodule should instantiate the teacher only after it has decided more generation
-is needed.
-
-### Boundary split
-
-**`DistillationDataModule` owns orchestration/lifecycle:**
-- output path and file naming (`train.extxyz`, `val.extxyz`, `test.extxyz`)
-- generation lock file
-- reading/writing durable generation state
-- config/provenance compatibility checks
-- torn-write truncation using recorded byte offsets
-- deciding whether the teacher must be loaded
-- instantiating and releasing the teacher
-- exposing ordinary NequIP datasets to the trainer
-- recording dataset fingerprint in Lightning datamodule state
-
-**Generator/procedure classes own scientific sampling:**
-- how samples are enumerated or integrated
-- how one generated structure gets labeled
-- procedure-specific state for resume
-- what unit is split: base frame for rattle, snapshot for MD
-
-**ASEDataset remains the actual training Dataset:**
-- read the generated extxyz files
-- apply transforms
-- participate in NequIP statistics/dataloaders normally
-
-Do not make a public "distillation Dataset" responsible for generation side effects. Internal
-helper classes can be dataset-like, but generation should finish before dataloader workers exist.
-
-### Implementation sketch
-
-Add:
-
-```text
-nequip_extension_template/
-  data/
-    __init__.py
-    datamodule.py          # DistillationDataModule
-    state.py               # state read/write/check/truncate/lock helpers
-    paths.py               # split_file(), state_file(), constants
-```
-
-Refactor:
-
-```text
-nequip_extension_template/sample/sampler.py
-```
-
-Current `Sampler` mixes two responsibilities:
-1. filesystem lifecycle manager
-2. sampling procedure abstraction
-
-Move (1) to `data/state.py` and `DistillationDataModule`. Keep (2), probably renamed to
-`SampleGenerator`, `GenerationProcedure`, or similar. `RattleSampler` becomes `RattleGenerator`;
-`MDSampler` becomes `MDGenerator`. Compatibility aliases can remain while configs migrate.
-
-Method mapping:
-
-```text
-Sampler.generate()
-  -> DistillationDataModule.prepare_data()
-
-Sampler.read_state/check_goal/truncate_to/write_state
-  -> data/state.py helpers used by the datamodule
-
-Sampler.finished/step/procedure_state/restore_progress
-  -> generator/procedure interface
-
-Sampler.append()
-  -> GenerationContext.append(atoms, split), owned by datamodule/state layer
-```
-
-Preferred generator API:
-
-```python
-class GenerationProcedure:
-    @property
-    def finished(self) -> bool: ...
-    def step(self, context: GenerationContext) -> None: ...
-    def procedure_state(self) -> dict: ...
-    def restore_progress(self, procedure_state: dict) -> None: ...
-```
-
-`GenerationContext` provides `append(atoms, split)`, counters, split file paths, and state writes.
-This keeps persistence policy out of procedure code.
-
-### DataModule lifecycle
-
-`DistillationDataModule` should likely subclass `nequip.data.datamodule.ASEDataModule`.
-Measured fact from installed NequIP 0.17.1: `ASEDataModule.__init__` only converts file paths into
-`ASEDataset` configs; it does not read them. Therefore the subclass can compute final split paths
-at construction and call `super().__init__(train_file_path=..., val_file_path=..., test_file_path=...)`
-before files exist, then generate them in `prepare_data()` before `setup()` instantiates datasets.
-
-Lifecycle:
-
-```text
-__init__
-  store raw teacher/generation config without recursive instantiation
-  compute split file paths from sample_path
-  call ASEDataModule.__init__ with those split paths and normal transforms/loaders/stats
-
-prepare_data
-  acquire sample_path lock
-  read generation_state.pt if present
-  if complete and compatible:
-      return without loading teacher
-  if no state but split files exist:
-      hard error
-  restore counters and truncate torn writes
-  instantiate teacher
-  instantiate generator/procedure with teacher/context
-  generate until complete
-  write final state
-  release teacher and torch.cuda.empty_cache()
-
-setup(stage)
-  call super().setup(stage)
-  normal ASEDataModule behavior loads ASEDataset from generated files
-```
-
-Add a generate-only utility only if needed:
-
-```bash
-nequip-distill-generate -cp /abs/path -cn distill
-```
-
-This should instantiate `config.data` and call `prepare_data()` without training. The current
-`nequip-distill` orchestration should become compatibility sugar or a migration error, not the
-primary workflow.
-
-### Config migration
-
-Old:
-
-```yaml
-run: [sample, train, val, test]
-sample_path: ...
-sampler:
-  _target_: nequip_extension_template.sample.RattleSampler
-  calculator: ...
-data:
-  _target_: nequip.data.datamodule.ASEDataModule
-```
-
-New:
-
-```yaml
-run: [train, val, test]
-data:
-  _target_: nequip_extension_template.data.DistillationDataModule
-  _recursive_: false
-  sample_path: ...
-  teacher: ...
-  generation: ...
-```
-
-Remove:
-- top-level `sample_path`
-- top-level `sampler`
-- special `sample` run type
-- code that patches `data.train_file_path` / `val_file_path` / `test_file_path`
-- hard requirement that `data._target_` is `ASEDataModule`
-
-Keep:
-- three pre-split extxyz files
-- no NequIP `split_dataset` for generated data
-- frozen split membership at generation time
-- restart/provenance guardrails
-
-### Resume semantics to keep
-
-Keep the core safety model:
-- generation state lives beside generated data
-- no state + existing split files = hard error
-- state version mismatch = hard error
-- generator class mismatch = hard error
-- file shorter than recorded byte offset = hard error
-- file longer than recorded byte offset = truncate and regenerate tail
-- state writes are atomic (`.tmp` + `os.replace`)
-- progress is separate from goal/provenance
-
-Rename `sampler_state.pt` to `generation_state.pt` for new datasets. Compatibility can read the
-old name during migration.
-
-Suggested state shape:
-
-```python
-{
-    "version": 2,
-    "generator_class": "nequip_extension_template.sample.RattleGenerator",
-    "goal": {
-        "immutable_config": {...},
-        "teacher_identity": {...},
-        "base_frames_digest": "...",
-    },
-    "progress": {
-        "n_written": 50,
-        "split_counts": {"train": 40, "val": 5, "test": 5},
-        "offsets": {"train": 123, "val": 45, "test": 45},
-        "procedure": {...},
-    },
-    "dataset_fingerprint": "...",
-}
-```
-
-### Resume semantics to improve
-
-Replace current "any config difference is fatal" with classified compatibility:
-
-**Immutable by default:**
-- generator class
-- base frame contents, not just path
-- teacher identity
-- sampling knobs that affect already-written structures
-- split policy/seed/fractions, unless split membership is stored explicitly
-- label schema and key mapping
-
-**Mutable:**
-- teacher device
-- `state_interval`
-- dataloader settings
-- transforms/stats settings applied after generated files are read
-- output path, if the whole dataset directory was moved coherently
-
-**Conditionally mutable:**
-- requested sample budget
-- added rattle variants
-- added base frames
-- teacher path, if a strong artifact hash proves it is the same teacher
-
-Default rule: a new or unclassified generation knob is fatal until explicitly classified.
-
-### Teacher identity
-
-Current code stores calculator config but does not strongly identify the teacher artifact.
-Datamodule state should record a teacher identity separate from runtime plumbing:
-
-```yaml
-teacher_identity_policy: strict_hash
-```
-
-Possible policies:
-- `strict_hash`: hash teacher file contents; strongest and preferred for science
-- `metadata`: path + size + mtime; faster but weaker
-- explicit user-supplied identifier for non-file calculators
-
-Device must not be part of identity. Moving from `cuda` to `cpu` should not invalidate a finished
-dataset.
-
-### Rattle resume/extension
-
-Current rattle resume is close to ideal because each generated structure has a stable identity:
-
-```text
-base_frame_key + variant_label + seed -> geometry
-```
-
-Initial datamodule port can preserve existing conservative behavior: same base frame digest, same
-variant set, same split assignment, continue from `n_steps`.
-
-Later improvement: switch from pure count-based progress to item IDs:
-
-```text
-item_id = base_frame_key | variant_label
-```
-
-Then state can know which item IDs are complete, allowing natural extension:
-- adding a new strain magnitude appends new variants
-- existing structures remain bit-identical
-- new structures inherit the base frame split
-
-Adding base frames is harder. If split membership is recomputed with `random_split(n)`, adding
-frames can move old base frames across train/val/test. Legal base-frame extension requires either:
-- store split membership per `base_frame_key` and append new keys without moving old ones, or
-- use a stable hash-based split assignment per base-frame key
-
-Until one of those exists, changing base frame contents/count should remain fatal.
-
-### MD resume
-
-Moving generation into the DataModule does not by itself solve MD resume. MD still needs
-procedure-specific trajectory checkpointing:
-- positions
-- cell
-- velocities/momenta
-- MD step count
-- snapshot count
-- NumPy RNG bit generator state
-- any ASE Langevin/thermostat state not captured above
-- split assignment
-
-Until that is implemented, MD generation should still refuse resume from partial state. The
-datamodule can own the refusal message and cleanup, but the scientific resume state belongs to
-the MD generator.
-
-### Training checkpoint semantics
-
-The current CLI guard refuses "new structures added + `ckpt_path`" because Lightning checkpoint
-resume may not train the new data. In the datamodule design, use the datamodule checkpoint state
-instead:
+- `_recursive_: false` is load-bearing: without it Hydra instantiates `data.teacher` during
+  DataModule construction, loading the teacher onto a GPU possibly for a dataset that is already
+  complete.
+- Measured (NequIP 0.17.1): `ASEDataModule.__init__` only converts file paths into `ASEDataset`
+  configs; it does not read them. So the subclass can compute split paths and call
+  `super().__init__(train_file_path=..., ...)` before the files exist, then generate in
+  `prepare_data()` before `setup()` builds datasets.
+- Generation finishes entirely in `prepare_data()`, before dataloader workers exist. No public
+  "distillation Dataset" with generation side effects — `ASEDataset` stays boring.
+
+Config migration removes: top-level `sample_path`, top-level `sampler`, the `sample` run type, code
+that patches `data.*_file_path`, and the hard requirement that `data._target_` is `ASEDataModule`.
+Keeps: three pre-split extxyz files, no NequIP `split_dataset` for generated data, split membership
+frozen at generation time, restart/provenance guardrails.
+
+### 11.7 Settled sub-decisions
+
+1. **One record file, three sections** (11.2). Atomicity.
+2. **Digests are stored and verified on resume.** Offsets alone catch the realistic failure (torn
+   write of an append-only file we wrote ourselves); digests additionally catch mid-file edits and
+   wrong-dataset. At 50–200 structures the extra read is free. Revisit if datasets reach ~10^5.
+3. **`attach_calculator()` replaces `calculator=None`.** The no-teacher fast path is currently a
+   hack — construct with a `None` calculator and hope nothing touches it. Attaching makes the fast
+   path the normal construction rather than a special case.
+4. **`label()` moves out of `RattleSampler` to a shared module function.** Teacher call +
+   `SinglePointCalculator` has nothing to do with rattling. Caveat: generators cannot uniformly
+   yield *unlabeled* frames — MD needs the calculator during integration and gets its labels free
+   from the dynamics, while rattle must ask. So: shared helper, generator decides when to call it.
+5. **Enumerable vs sequential generators is a real property, deferred to 11.10.** Rattle can name
+   every structure it will make up front; MD cannot. Design must not foreclose it.
+
+### 11.8 Current implementation state (2026-09-18)
+
+Committed (`9a6f92f`, `b02b74c`):
+- `DistillationDataModule` subclasses `ASEDataModule`, computes split paths in `__init__`,
+  generates in `prepare_data()`, has a no-teacher fast path for complete datasets.
+- `data.generation._target_` still points at the existing sampler classes.
+- Tracked example `examples/rattle_train_datamodule.yaml`.
+- Generation still driven by the old `Sampler.generate()`; restart still owned by sampler
+  machinery (`sampler_state.pt`, config diff, base-frame digest, byte offsets, truncation,
+  `restore_progress()`).
+
+Uncommitted working tree — the old plan's "Phase 1", mechanical extraction, complete and green
+(`pytest -q` → 46 passed):
+- `data/paths.py`, `data/state.py` added; `sampler.py` −130 lines, now delegating wrappers;
+  `datamodule.py` uses the shared refusal helper; `tests/unit/data/test_state.py` (17 tests).
+
+**One correction this rewrite forces:** `data/state.py::check_goal()` takes `base_frames` and
+hashes them. Base frames are a generator input — that is semantic policy sitting in the physical
+layer. It moves to the generator; `state.py` keeps only the shared diff mechanism. Everything
+else in `paths.py`/`state.py` survives.
+
+### 11.9 Phase plan
+
+Each phase is one approved step, runnable at its end, with the full suite green. No bundling.
+
+**Phase A — `SampleStore`.** Add `data/store.py` wrapping the existing `state.py` free functions in
+an object holding `sample_path` + counters. `Sampler` uses it internally and delegates; public
+behavior and record shape (v1) unchanged. Purely mechanical.
+- Check: `pytest -q`; generated split files byte-identical to before.
+
+**Phase B — provenance moves to the generator.** Add `Generator.provenance()` /
+`immutable_keys()` / `check_compatible()`. Remove the `base_frames` leak from `state.py`, leaving
+a generic `diff_configs()`. Record still v1 shape; the `goal` section is now assembled by the
+generator.
+- Check: `pytest -q`; resume-refusal messages unchanged in substance.
+
+**Phase C — record v2.** Three sections per 11.2. Store owns `contents` (offsets, digests,
+`n_written`, `split_counts`); generator's `state()`/`restore()` carry procedure progress only. Add
+content digests and verify-on-resume. v1 records get an explicit, actionable refusal — no silent
+migration. *(Open: the sandbox dataset would need regenerating. Cheap, but it is a GPU run.)*
+- Check: `pytest -q`; new tests for digest mismatch and v1 refusal.
+
+**Phase D — orchestration moves to the datamodule.** `prepare_data()` becomes 11.4 verbatim.
+`Sampler.generate()` becomes a thin compat wrapper or is deleted (see the open question below).
+`attach_calculator()` lands; `label()` extracted per 11.7.
+- Check: `pytest -q`; `pytest -m e2e`.
+
+**Phase E — rename.** `Sampler` → `Generator`, `RattleSampler` → `RattleGenerator`, `MDSampler` →
+`MDGenerator`, old names kept as aliases. `sampler_state.pt` → `generation_state.pt`. Examples,
+`configs/`, and `docs/tutorial/` updated. Error messages say "generator".
+- Check: `pytest -q`; `pytest -m e2e`.
+
+**Open question, needs the user's call before Phase D:** does `nequip-distill` survive? Options are
+(i) keep it as sugar that instantiates `data` and calls `prepare_data()`, (ii) reduce it to a
+migration error, (iii) delete it. This decides how much of the 15-case e2e CLI suite churns.
+
+### 11.10 Deferred, after the boundary is stable
+
+Principle: move the architectural boundary first, then improve restart semantics. Do not rewrite
+restart logic and the NequIP integration boundary at the same time.
+
+**Compatibility classification.** Replace "any config difference is fatal" with immutable/mutable,
+via `immutable_keys()`.
+- *Immutable:* generator class, base-frame contents, teacher identity, every sampling knob that
+  affects already-written structures, split policy/seed/fractions (unless membership is stored
+  explicitly), label schema and key mapping.
+- *Mutable:* teacher device, `state_interval`, dataloader settings, transforms/stats, output path
+  if the whole directory moved coherently.
+- *Conditionally mutable:* sample budget, added rattle variants, added base frames, teacher path
+  when a strong hash proves it is the same teacher.
+- Default rule: a new or unclassified knob is **fatal** until explicitly classified.
+- Messages must name exactly which immutable settings changed and which mutable ones were ignored.
+
+**Teacher identity.** Record identity separately from runtime plumbing. `strict_hash` (hash the
+artifact; preferred for science) / `metadata` (path + size + mtime) / explicit user identifier for
+non-file calculators. **Device is never part of identity** — `cuda` → `cpu` must not invalidate a
+finished dataset.
+
+**Enumerable generators (rattle extension).** Rattle has a stable identity per structure:
+`item_id = base_frame_key | variant_label`. If an enumerable generator declares its manifest up
+front, progress becomes "how far through the manifest" — universal machinery, and rattle's own
+state drops to nearly nothing. Then adding a strain magnitude appends new variants, old structures
+stay byte-identical, and new ones inherit their base frame's split. MD stays a sequential generator
+with an opaque blob. This asymmetry is a property of the procedures, not an implementation
+accident — do not design against it.
+
+Adding *base frames* stays fatal regardless until split membership is stored per `base_frame_key`,
+or split assignment becomes a stable hash of the key. Otherwise `random_split(n)` moves existing
+base frames across train/val/test.
+
+**MD resume.** Needs procedure-specific trajectory checkpointing: positions, cell,
+velocities/momenta, MD step count, snapshot count, NumPy bit-generator state, any Langevin
+thermostat state not covered, split assignment. Until then MD refuses partial resume. The
+datamodule may own the refusal message; the scientific state belongs to `MDGenerator`.
+
+**Training checkpoint fingerprint.** Move the old CLI `ckpt_path` guard into native Lightning
+datamodule state:
 
 ```python
 def state_dict(self):
@@ -977,171 +919,61 @@ def state_dict(self):
     return sd
 
 def load_state_dict(self, state_dict):
-    old = state_dict.get("distillation_dataset_fingerprint")
-    new = self.dataset_fingerprint()
-    if old != new:
+    if state_dict.get("distillation_dataset_fingerprint") != self.dataset_fingerprint():
         raise ValueError("checkpoint was trained with a different generated dataset")
     super().load_state_dict(state_dict)
 ```
 
-Semantics:
-- training crash, dataset unchanged: resume OK
-- sampling crash before training: generation resumes, then training starts normally
-- dataset extended and user tries Lightning resume from old checkpoint: refuse
-- dataset extended and user wants warm start: use explicit model-from-checkpoint initialization,
-  not Lightning `ckpt_path`
+Semantics: training crash with unchanged dataset resumes fine; sampling crash resumes generation
+then trains; dataset extended + Lightning `ckpt_path` refuses; dataset extended + warm start is an
+explicit model-from-checkpoint path, never `ckpt_path`.
 
-This is more native than `distill.py` inspecting `ckpt_path`.
+**Lock.** `sample_path/.generation.lock` around datamodule generation. Acquire, re-read record
+after acquiring, generate or no-op, release. Lightning's rank-zero `prepare_data()` is not
+sufficient — it does not protect against two separate jobs pointing at one `sample_path`.
 
-### Concurrency
+### 11.11 Test plan
 
-Add a lock file under `sample_path`, even though Lightning usually runs `prepare_data()` on rank
-zero. This protects against two separate jobs pointing at the same dataset:
+1. **Store unit tests** — atomic write; append tracks offsets; truncation of excess; refusal on
+   short file; refusal on missing file with recorded bytes; digest mismatch; orphan split files.
+2. **Generator unit tests** — provenance round-trip; immutable-key diff names the changed key;
+   `state()`/`restore()` round-trip; `finished` transitions.
+3. **Datamodule unit tests** — constructor wires split paths into `ASEDataModule` configs;
+   `prepare_data()` generates; second `prepare_data()` no-ops *without instantiating the teacher*;
+   mutable settings do not invalidate a complete dataset.
+4. **Rattle integration** — interrupted generation resumes to the same split-file digests as an
+   uninterrupted run; split counts preserved; immutable change refused.
+5. **Training integration** — `nequip-train` with `DistillationDataModule` runs train/val/test;
+   checkpoint resume with the same dataset works; changed fingerprint refuses.
+6. **Migration** — a v1 record produces an actionable refusal; an old config translates or fails
+   with an actionable error.
 
-```text
-sample_path/.generation.lock
-```
+Tests stay CPU-only with no teacher (`ase.calculators.lj.LennardJones`) — a correctness decision,
+not a speed one. Byte-identity is a valid criterion *only* because no GPU is involved; see §6 for
+the measured GPU nondeterminism and the tolerance-based check that replaces it there.
 
-Process:
-1. acquire lock
-2. re-read state after lock acquisition
-3. generate or no-op
-4. release lock
+### 11.12 Operational facts established while smoke-testing the datamodule
 
-Do not rely only on Lightning rank-zero behavior.
-
-### Test plan
-
-1. State helper unit tests:
-   - atomic write
-   - compatible complete state no-ops
-   - config differences classified correctly
-   - torn writes truncate
-   - no state + existing split file refuses
-
-2. Datamodule unit tests:
-   - constructor wires split paths into ASEDataModule configs
-   - `prepare_data()` generates files
-   - second `prepare_data()` no-ops without instantiating teacher
-   - mutable settings do not invalidate a complete dataset
-
-3. Rattle integration tests:
-   - interrupted datamodule generation resumes to same digests as uninterrupted
-   - split counts preserved
-   - immutable setting change refused
-   - eventually, added variant extension works without changing old files
-
-4. Training integration tests:
-   - `nequip-train` with `DistillationDataModule` runs train/val/test
-   - checkpoint resume with same dataset works
-   - checkpoint resume with changed dataset fingerprint refuses
-   - warm-start path is explicit and does not masquerade as resume
-
-5. Migration tests:
-   - old config either translates or fails with actionable error
-
-### Migration order
-
-1. Add `DistillationDataModule` that reuses current `Sampler.generate()` with minimal changes.
-2. Add examples that run through `nequip-train`.
-3. Move state/lifecycle code out of `Sampler` into `data/state.py`.
-4. Rename/refactor sampler classes into generator/procedure classes.
-5. Replace "any config difference is fatal" with immutable/mutable classification.
-6. Add datamodule checkpoint fingerprint protection.
-7. Decide whether to support manifest/item-ID based rattle extension.
-
-Principle: move the public architectural boundary first, then improve restart semantics. Do not
-rewrite all restart logic at the same time as the NequIP integration boundary.
-
-### Handoff after first datamodule slice (2026-09-16)
-
-Implemented and committed:
-- `b02b74c Organize sampler tests and design notes`
-- `9a6f92f Add distillation data module path`
-
-Current implementation state:
-- `nequip_extension_template.data.DistillationDataModule` exists and subclasses NequIP's
-  `ASEDataModule`.
-- It computes split file paths from `data.sample_path` and passes them to `ASEDataModule` as
-  `train_file_path` / `val_file_path` / `test_file_path`.
-- It accepts `data.teacher` and `data.generation`; `data.generation` currently points to the
-  existing sampler classes, e.g. `nequip_extension_template.sample.RattleSampler`.
-- It deliberately requires `_recursive_: false` in configs so Hydra does not eagerly instantiate
-  `data.teacher`.
-- `prepare_data()` materializes all generated frames before NequIP loads datasets/training starts.
-  This is expected behavior for now.
-- Restart/provenance are still owned by the existing sampler state machinery:
-  `sampler_state.pt`, config diff, base-frame digest, byte offsets, truncation, and
-  `restore_progress()`.
-- The datamodule has a no-teacher fast path for already-complete sampled datasets: it instantiates
-  the sampler with `calculator=None`, checks/restores state, and returns without loading the
-  teacher if `sampler.finished` is true.
-- No `data/state.py`, lock file, `generation_state.pt`, teacher artifact hash, dataset
-  fingerprint, or generator/procedure refactor exists yet.
-
-New tracked example:
-- `examples/rattle_train_datamodule.yaml`
-- Primary invocation target is now direct NequIP:
-
-```bash
-cd /n/home12/lsteinberger/code/TuneandDistill
-nequip-train -cp "$PWD/examples" -cn rattle_train_datamodule
-```
-
-Important config detail:
-- `ckpt_path: null` must NOT appear in direct `nequip-train` configs. Unlike `nequip-distill`,
-  NequIP treats the presence of `ckpt_path` as a restart, even when the value is `null`, and then
-  tries to load checkpoint `None`, producing the `NoneType`/`seek` traceback. The tracked
-  datamodule example now omits `ckpt_path` entirely.
-
-Sandbox-local smoke-test setup:
-- An untracked, gitignored local config was copied to:
-
-```text
-sandbox/configs/rattle_train_datamodule_local.yaml
-```
-
-- It differs from the tracked example only by path locality and by omitting `ckpt_path`:
-
-```yaml
-data:
-  sample_path: rattle_train_datamodule_dataset
-  teacher:
-    model_path: ../inputs/teacher.nequip.zip
-  generation:
-    base_frames: ../inputs/base_frames.xyz
-```
-
-- It is intended to be launched from `sandbox/out`, not from repo root:
+- **`ckpt_path: null` must NOT appear in a direct `nequip-train` config.** Unlike `nequip-distill`,
+  NequIP treats the mere presence of `ckpt_path` as a restart even when the value is `null`, then
+  tries to load checkpoint `None` → `NoneType`/`seek` traceback. The tracked datamodule example
+  omits it entirely.
+- Hydra `_target_` values are import paths, independent of cwd.
+- Hydra `-cp` must be absolute; relative `-cp ../configs` gets read as a package path such as
+  `nequip.scripts.configs`.
+- Ordinary file paths in YAML (`model_path`, `base_frames`, `sample_path`) resolve against process
+  cwd, not the config location.
+- The untracked sandbox-local config `sandbox/configs/rattle_train_datamodule_local.yaml` differs
+  from the tracked example only in path locality, and is launched from `sandbox/out`:
 
 ```bash
 cd /n/home12/lsteinberger/code/TuneandDistill/sandbox/out
-
 PATH="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311/bin:$PATH" \
 CONDA_PREFIX="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311" \
 HYDRA_FULL_ERROR=1 \
-nequip-train \
-  -cp /n/home12/lsteinberger/code/TuneandDistill/sandbox/configs \
-  -cn rattle_train_datamodule_local
+nequip-train -cp /n/home12/lsteinberger/code/TuneandDistill/sandbox/configs \
+             -cn rattle_train_datamodule_local
 ```
 
-Path gotchas established during smoke testing:
-- Hydra `_target_` values are Python import paths and are independent of cwd.
-- Hydra `-cp` must be absolute for `nequip-train`; relative `-cp ../configs` can be interpreted as
-  a package/module path such as `nequip.scripts.configs`.
-- Ordinary file paths in YAML (`model_path`, `base_frames`, `sample_path`) are interpreted relative
-  to the process cwd. The sandbox-local config only works from `sandbox/out`.
-- Running from `sandbox/out` gives default Hydra output under `sandbox/out/outputs/...` and sampled
-  frames under `sandbox/out/rattle_train_datamodule_dataset/`.
-
-Verification already run:
-- `python -m pytest tests/unit/data/test_distillation_datamodule.py -q`
-- `python -m pytest tests/e2e/test_distill_cli.py -k nequip_train_with_distillation_datamodule -m e2e -q`
-- `python -m pytest -q`
-
-Known follow-ups:
-1. The sandbox-local config is intentionally untracked. This is less ideal for version management,
-   but it keeps user-side smoke runs contained in `sandbox/` without baking sandbox paths into the
-   general example.
-2. Next architecture step is not more config work; it is splitting the sampler's two roles:
-   datamodule/state layer owns mechanical persistence, generator owns semantic provenance/progress.
+  Kept untracked deliberately: user-side smoke runs stay contained in `sandbox/` instead of baking
+  sandbox paths into the general example.
