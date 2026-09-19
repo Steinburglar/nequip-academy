@@ -23,7 +23,7 @@ def bare_sampler(tmp_path, sample_path):
     """A `Sampler` built far enough to use its record builders, and nothing more."""
     base = tmp_path / "base.xyz"
     write(str(base), [frame()])
-    sampler = Sampler(calculator=None, base_frames=base, sample_path=sample_path)
+    sampler = Sampler(base_frames=base, sample_path=sample_path)
     sampler.sampler_config = {"seed": 1, "calculator": {"device": "cpu"}}
     return sampler
 

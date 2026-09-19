@@ -43,7 +43,12 @@ scratch in small approved steps.
   `procedure_state()` (default `{}`), `restore_progress(blob)` (default RAISES
   `NotImplementedError` → a sampler not taught to resume refuses instead of duplicating
   everything). Concrete: `append`, `split_file`, `provenance()`, `_comparable(provenance)`,
-  `check_compatible(stored, n_written)`, `write_state()`, `resume_from(record)`, `generate()`.
+  `check_compatible(stored, n_written)`, `write_state()`, `resume_from(record)`,
+  `attach_calculator`/`release_calculator`, `generate(teacher_factory=None)`.
+  **`calculator` is optional.** A generator with none is a valid state: it can read a record,
+  check settings, reconcile and answer `finished` — it just cannot `step()`. `generate()` calls
+  `teacher_factory` ONLY after deciding it has something left to produce, so a complete dataset
+  never loads the model. No teacher and nothing to produce ⇒ clear refusal.
   Module fn `frames_digest(frames)` — hashes the PARSED structures (numbers, rounded
   positions, cell, pbc), NOT file bytes, so reformatting the input file is not a change but
   moving an atom is. Opposite of `store.digests()`, which hashes output bytes.
@@ -79,8 +84,10 @@ scratch in small approved steps.
   `__init__` and passes them to `ASEDataModule` before the files exist; `prepare_data()`
   generates. Requires `_recursive_: false` so hydra does not build the teacher eagerly. Sets
   `sampler.sampler_config` AFTER `instantiate` — NOT as a ctor arg, `instantiate` recurses into
-  args hunting `_target_` and would build the teacher twice. Has a no-teacher fast path:
-  instantiate with `calculator=None`, check/restore state, return if `finished`.
+  args hunting `_target_` and would build the teacher twice. `prepare_data()` is split into a
+  labelled **adapter** half (everything touching `self`; hydra config → objects) and a
+  **pipeline** half (local variables only, paste-able into a script — `planning.md` §11.1a).
+  Builds the sampler ONCE, with no calculator, and hands `generate()` a `teacher_factory`.
 
 Leftovers from the upstream template, delete or replace when touched: `_keys.py` registers two
 unused placeholder fields; `model/`, `nn/`, `train/` are README-only stub dirs.

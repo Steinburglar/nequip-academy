@@ -46,7 +46,10 @@ def build_sampler(path, base_frames, **overrides):
     }
     settings.update(overrides)
     sampler = ToySampler(
-        calculator=None,
+        # ToySampler fabricates structures instead of labeling them, so the object
+        # here is never used. It is supplied because the base class's contract is
+        # that stepping needs a teacher, and generate() now says so up front.
+        calculator=object(),
         base_frames=str(base_frames),
         sample_path=str(path),
         target=settings["target"],
@@ -235,3 +238,57 @@ def test_check_compatible_accepts_unchanged_settings(tmp_path):
     write_base_frame(base)
     sampler = build_sampler(tmp_path / "sampled", base)
     sampler.check_compatible(sampler.provenance(), n_written=4)
+
+
+# ------------------------------------------------- lazy teacher acquisition
+
+
+def build_teacherless(path, base_frames, **overrides):
+    """Like `build_sampler`, but with no calculator attached yet."""
+    sampler = build_sampler(path, base_frames, **overrides)
+    sampler.release_calculator()
+    return sampler
+
+
+def test_generate_builds_the_teacher_only_once_and_only_when_stepping(tmp_path):
+    base = tmp_path / "base.xyz"
+    sample_path = tmp_path / "sampled"
+    write_base_frame(base)
+
+    built = []
+
+    def factory():
+        built.append(1)
+        return object()
+
+    assert build_teacherless(sample_path, base).generate(teacher_factory=factory) == 4
+    assert built == [1], "the teacher was not built, or was built more than once"
+
+
+def test_generate_does_not_build_the_teacher_for_a_finished_dataset(tmp_path):
+    """The whole point of deferring it: a second student pays nothing for the model."""
+    base = tmp_path / "base.xyz"
+    sample_path = tmp_path / "sampled"
+    write_base_frame(base)
+    build_teacherless(sample_path, base).generate(teacher_factory=lambda: object())
+
+    built = []
+    resumed = build_teacherless(sample_path, base)
+    assert resumed.generate(teacher_factory=lambda: built.append(1)) == 4
+    assert built == [], "a complete dataset still loaded the teacher"
+    assert resumed.n_resumed == 4
+
+
+def test_generate_refuses_to_step_with_no_teacher_at_all(tmp_path):
+    base = tmp_path / "base.xyz"
+    write_base_frame(base)
+    with pytest.raises(ValueError, match="has no teacher"):
+        build_teacherless(tmp_path / "sampled", base).generate()
+
+
+def test_an_attached_calculator_needs_no_factory(tmp_path):
+    base = tmp_path / "base.xyz"
+    write_base_frame(base)
+    sampler = build_teacherless(tmp_path / "sampled", base)
+    sampler.attach_calculator(object())
+    assert sampler.generate() == 4

@@ -90,9 +90,9 @@ class Sampler:
 
     def __init__(
         self,
-        calculator,
         base_frames: Union[str, Path],
         sample_path: Union[str, Path],
+        calculator=None,
         state_interval: int = 1,
     ):
         self.calculator = calculator
@@ -110,6 +110,23 @@ class Sampler:
         # calculator's own config, so passing it that way would load the teacher
         # twice.
         self.sampler_config: Optional[dict] = None
+
+    # ------------------------------------------------------------- teacher lifecycle
+
+    def attach_calculator(self, calculator) -> None:
+        """Give this generator the teacher it needs in order to :meth:`step`.
+
+        A generator without a calculator is a legitimate state, not a half-built one:
+        it can read a record, check settings, restore its position and answer
+        :attr:`finished`. It just cannot produce a new structure. That is what lets a
+        caller find out whether a dataset is already complete before paying to load a
+        multi-gigabyte model onto a GPU.
+        """
+        self.calculator = calculator
+
+    def release_calculator(self) -> None:
+        """Drop the teacher once no more structures will be produced."""
+        self.calculator = None
 
     # ------------------------------------------------------------------ subclass API
 
@@ -265,7 +282,7 @@ class Sampler:
 
     # --------------------------------------------------------------------- main loop
 
-    def generate(self) -> int:
+    def generate(self, teacher_factory=None) -> int:
         """Step until finished, continuing an existing dataset if there is one.
 
         Returns the number of structures in the dataset, including any that were
@@ -273,6 +290,13 @@ class Sampler:
 
         The directory is not created up front: the store makes it when the first
         structure or record is written, so a run refused below leaves nothing behind.
+
+        `teacher_factory` is a zero-argument callable that builds the teacher, and it
+        is called only after this method has established that there is something left
+        to produce. That ordering is the point: an already-complete dataset can be
+        verified -- record read, settings checked, files reconciled -- without loading
+        a model onto a GPU for nothing. A caller that already holds a calculator
+        should :meth:`attach_calculator` instead and pass nothing here.
         """
         record = self.store.load_record()
 
@@ -285,6 +309,18 @@ class Sampler:
                 f"continuing {self.sample_path}: {self.n_written} structure(s) "
                 f"already written ({counts})"
             )
+
+        # The only thing skipped for an already-complete dataset is building the
+        # teacher. Everything else below still runs, so a finished run rewrites its
+        # record exactly as it always did.
+        if not self.finished and self.calculator is None:
+            if teacher_factory is None:
+                raise ValueError(
+                    f"{self.sample_path} needs more structures, but this "
+                    f"{type(self).__name__} has no teacher. Pass `teacher_factory` "
+                    "to `generate()`, or call `attach_calculator()` first."
+                )
+            self.attach_calculator(teacher_factory())
 
         since_write = 0
         while not self.finished:

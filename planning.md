@@ -913,10 +913,24 @@ Two things learned here:
   microseconds. A large dataset should raise `state_interval`. An incremental hash carried across
   appends would fix the asymptotics and was rejected as optimising for a size nobody runs.
 
-**Phase D — remove the duplicated restore path.** `attach_calculator()` lands, so the datamodule
-stops instantiating the generator twice to avoid loading the teacher, and
-`_finished_without_teacher` stops repeating what `resume_from` already does. `label()` extracted
-per 11.7.
+**Phase D — remove the duplicated restore path.** Teacher half DONE 2026-09-19; `label()`
+extraction still outstanding.
+
+`Sampler.calculator` is now optional and `generate(teacher_factory=...)` calls the factory only
+after establishing there is something left to produce. `_finished_without_teacher` is deleted, as
+is `_instantiate_sampler`'s `load_teacher` flag.
+
+What this did and did not change: the laziness itself already worked -- that was the point of
+`_finished_without_teacher`. What it removes is doing it with TWO generators. On the resume path
+the old code built the generator, read the record, checked settings and reconciled (which since
+Phase C hashes all three split files), then threw that generator away and did all of it again
+inside `generate()`. It also removes `calculator=None` as an invalid state the surrounding code
+merely tiptoed around: a generator without a calculator is now documented as able to inspect and
+resume but not step.
+
+Care taken: an early `return` for a finished dataset would have skipped the final `write_state()`
+that `generate()` always did. The guard is on acquiring the teacher only, so everything else below
+still runs and a finished run rewrites its record exactly as before.
 
 **`Sampler.generate()` STAYS** (user, 2026-09-18). An earlier draft of this phase had
 `prepare_data()` absorb the loop and `generate()` deleted; that would make nequip a hard

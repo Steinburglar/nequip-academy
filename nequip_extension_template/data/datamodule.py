@@ -135,11 +135,14 @@ class DistillationDataModule(ASEDataModule):
             )
         return sampler_config
 
-    def _instantiate_sampler(self, sampler_config: dict, *, load_teacher: bool):
-        """Instantiate the configured sampler, optionally suppressing teacher load."""
-        config = copy.deepcopy(sampler_config)
-        if not load_teacher:
-            config["calculator"] = None
+    def _instantiate_sampler(self, sampler_config: dict):
+        """Build the configured sampler, WITHOUT its teacher.
+
+        The teacher is left out so that `generate()` can decide whether it is needed
+        at all. `sampler_config` still carries the teacher's own config, because that
+        is provenance and has to be compared whether or not the model gets loaded.
+        """
+        config = {k: v for k, v in sampler_config.items() if k != "calculator"}
         sampler = instantiate(
             config,
             sample_path=str(self.sample_path),
@@ -148,47 +151,30 @@ class DistillationDataModule(ASEDataModule):
         sampler.sampler_config = sampler_config
         return sampler
 
-    def _finished_without_teacher(self, sampler_config: dict):
-        """Return a completed sampler if the dataset can be verified without teacher.
-
-        The existing sampler owns compatibility checks and procedure restore. Reuse
-        those mechanics with ``calculator=None`` so a second student can train on a
-        completed dataset without loading the teacher model.
-
-        The directory is not created here: the store makes it when something is
-        actually written, so a run refused below leaves nothing behind.
-        """
-        sampler = self._instantiate_sampler(sampler_config, load_teacher=False)
-        record = sampler.store.load_record()
-        if record is None:
-            sampler.store.refuse_orphan_files()
-            return None
-
-        sampler.resume_from(record)
-        if sampler.finished:
-            return sampler
-        return None
-
     def prepare_data(self) -> None:
-        """Generate or resume the sampled dataset before NequIP loads it."""
+        """Generate or resume the sampled dataset before NequIP loads it.
+
+        Two halves, deliberately. The first is hydra plumbing, specific to running
+        under `nequip-train`. The second names only local variables, so it is the
+        part a standalone generation script would keep (`planning.md` 11.1a).
+        """
+        # --- adapter: hydra config -> objects. A script replaces this half with
+        #     ordinary construction, so everything touching `self` belongs here.
         sampler_config = self._sampler_config()
+        teacher_config = copy.deepcopy(sampler_config["calculator"])
+        sampler = self._instantiate_sampler(sampler_config)
+        teacher_factory = lambda: instantiate(teacher_config)  # noqa: E731
         logger.info(f"preparing distillation dataset -> {self.sample_path}")
 
-        sampler = self._finished_without_teacher(sampler_config)
-        if sampler is None:
-            sampler = self._instantiate_sampler(sampler_config, load_teacher=True)
-            n_total = sampler.generate()
-        else:
-            n_total = sampler.n_written
+        # --- pipeline: names only local variables, so it is paste-able verbatim
+        n_total = sampler.generate(teacher_factory=teacher_factory)
         counts = ", ".join(f"{s}={n}" for s, n in sampler.split_counts.items())
         logger.info(
-            f"{self.sample_path} holds {n_total} labeled structures ({counts}); "
+            f"{sampler.sample_path} holds {n_total} labeled structures ({counts}); "
             f"{n_total - sampler.n_resumed} from this run, "
             f"{sampler.n_resumed} already present"
         )
+        sampler.release_calculator()
 
-        calculator = getattr(sampler, "calculator", None)
-        sampler.calculator = None
-        del calculator
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
