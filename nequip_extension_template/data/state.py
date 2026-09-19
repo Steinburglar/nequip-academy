@@ -17,13 +17,13 @@ from nequip_extension_template.data.paths import SPLITS, split_file
 
 logger = logging.getLogger(__name__)
 
-STATE_FILE = "sampler_state.pt"
+STATE_FILE = "generation_state.pt"
 STATE_VERSION = 2
 
 
-def state_file(sample_path: Union[str, Path]) -> Path:
+def state_file(dataset_path: Union[str, Path]) -> Path:
     """Return the durable generation state path for a sample directory."""
-    return Path(sample_path) / STATE_FILE
+    return Path(dataset_path) / STATE_FILE
 
 
 def flatten(value, prefix: str = "") -> dict:
@@ -36,12 +36,12 @@ def flatten(value, prefix: str = "") -> dict:
     return {prefix.rstrip("."): value}
 
 
-def split_offsets(sample_path: Union[str, Path]) -> dict:
+def split_offsets(dataset_path: Union[str, Path]) -> dict:
     """Return byte lengths for all split files in a generated dataset."""
     return {
         split: (
-            split_file(sample_path, split).stat().st_size
-            if split_file(sample_path, split).exists()
+            split_file(dataset_path, split).stat().st_size
+            if split_file(dataset_path, split).exists()
             else 0
         )
         for split in SPLITS
@@ -68,7 +68,7 @@ def refuse_changed_settings(
     stored: dict,
     live: dict,
     *,
-    sample_path: Union[str, Path],
+    dataset_path: Union[str, Path],
     n_written: int,
     explanations: Optional[dict] = None,
 ) -> None:
@@ -96,23 +96,23 @@ def refuse_changed_settings(
     if differences:
         joined = "\n".join(differences)
         raise ValueError(
-            f"{sample_path} holds {n_written} structure(s) produced under different "
+            f"{dataset_path} holds {n_written} structure(s) produced under different "
             f"settings:\n{joined}\n"
             "A resumed run can only continue a dataset it would have produced "
-            "itself. Put these back, or point `sample_path` somewhere else."
+            "itself. Put these back, or point `dataset_path` somewhere else."
         )
 
 
-def truncate_to(sample_path: Union[str, Path], offsets: dict) -> None:
+def truncate_to(dataset_path: Union[str, Path], offsets: dict) -> None:
     """Cut split files back to the byte lengths recorded in durable state."""
-    sample_path = Path(sample_path)
+    dataset_path = Path(dataset_path)
     for split in SPLITS:
-        path = split_file(sample_path, split)
+        path = split_file(dataset_path, split)
         offset = int(offsets[split])
         if not path.exists():
             if offset:
                 raise FileNotFoundError(
-                    f"{state_file(sample_path)} says {split} holds {offset} bytes, "
+                    f"{state_file(dataset_path)} says {split} holds {offset} bytes, "
                     f"but {path} does not exist."
                 )
             continue
@@ -120,9 +120,9 @@ def truncate_to(sample_path: Union[str, Path], offsets: dict) -> None:
         if size < offset:
             raise ValueError(
                 f"{path} is {size} bytes, shorter than the {offset} bytes "
-                f"{state_file(sample_path)} records for it. The record and the "
-                f"dataset in {sample_path} are not from the same run -- point "
-                "`sample_path` somewhere else."
+                f"{state_file(dataset_path)} records for it. The record and the "
+                f"dataset in {dataset_path} are not from the same run -- point "
+                "`dataset_path` somewhere else."
             )
         if size > offset:
             logger.warning(
@@ -133,23 +133,23 @@ def truncate_to(sample_path: Union[str, Path], offsets: dict) -> None:
                 f.truncate(offset)
 
 
-def existing_split_files(sample_path: Union[str, Path]) -> list[str]:
+def existing_split_files(dataset_path: Union[str, Path]) -> list[str]:
     """Return generated split files that already exist."""
-    sample_path = Path(sample_path)
+    dataset_path = Path(dataset_path)
     return [
-        str(split_file(sample_path, s))
+        str(split_file(dataset_path, s))
         for s in SPLITS
-        if split_file(sample_path, s).exists()
+        if split_file(dataset_path, s).exists()
     ]
 
 
-def refuse_existing_split_files_without_state(sample_path: Union[str, Path]) -> None:
+def refuse_existing_split_files_without_state(dataset_path: Union[str, Path]) -> None:
     """Raise if split files exist without their durable state record."""
-    existing = existing_split_files(sample_path)
+    existing = existing_split_files(dataset_path)
     if existing:
         raise FileExistsError(
             f"{existing} already exist, but {STATE_FILE} does not. Without it there "
             "is no record of what those structures are or what settings produced "
             "them, so they can neither be continued nor safely appended to -- delete "
-            "them, or point `sample_path` somewhere else."
+            "them, or point `dataset_path` somewhere else."
         )

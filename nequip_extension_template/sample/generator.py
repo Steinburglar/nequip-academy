@@ -1,29 +1,29 @@
-"""Base sampler.
+"""Base generator.
 
-Deliberately minimal. All any sampler shares is the teacher calculator, the frames
+Deliberately minimal. All any generator shares is the teacher calculator, the frames
 it starts from, and where the dataset is written. Everything else -- how many
 structures there are, what a step consists of, when it is finished, and which split
 a structure belongs to -- belongs to the procedure, so it belongs to the subclass.
 
 The base class knows only that the dataset is split three ways and where each part
-is written. It does not decide what goes where; concrete samplers do.
+is written. It does not decide what goes where; concrete generators do.
 
-:meth:`Sampler.step` does the whole job for one step: produce the next structure or
+:meth:`Generator.step` does the whole job for one step: produce the next structure or
 structures, label them, append them to the dataset, and advance the procedure's own
 state. Producing and labeling are not separated, because for MD-type procedures they
 are not separate events -- the dynamics needs the energy and forces to take the step,
 so the label is already in hand. Splitting them would either pay the teacher twice or
 require a cache across the seam.
 
-A run writes down what it has done, to ``sampler_state.pt`` beside the dataset, and
-reads it back if it finds one: pointing ``sample_path`` at a directory that
+A run writes down what it has done, to ``generation_state.pt`` beside the dataset, and
+reads it back if it finds one: pointing ``dataset_path`` at a directory that
 already holds a dataset continues that dataset rather than refusing it.
 
 The record holds two separate things, and keeping them separate is the point:
 
 * **progress** -- what is on disk. The counters, the byte offset of the end of each
   split file, and whatever the procedure needs to pick up where it stopped.
-* **the goal** -- a copy of the ``sampler`` config the dataset was built under, plus a
+* **the goal** -- a copy of the ``generator`` config the dataset was built under, plus a
   hash of the base frames that config named.
 
 A resumed run compares the goal in the record against the live config. At present any
@@ -70,8 +70,8 @@ def frames_digest(frames: Sequence[Atoms]) -> str:
     return h.hexdigest()[:16]
 
 
-class Sampler:
-    """Generates teacher-labeled structures into ``sample_path``.
+class Generator:
+    """Generates teacher-labeled structures into ``dataset_path``.
 
     Parameters
     ----------
@@ -80,9 +80,9 @@ class Sampler:
     base_frames
         Path to a file ASE can read, holding the structure(s) the procedure starts
         from. These may carry labels of their own; those labels are not used and do not reach the output.
-    sample_path
+    dataset_path
         Output directory. Passed in by ``DistillationDataModule`` from the
-        top-level ``sample_path`` config key, not from the ``sampler`` section.
+        top-level ``dataset_path`` config key, not from the ``generator`` section.
     state_interval
         How many structures to append between writes of the progress record. The
         default writes after every structure.
@@ -91,13 +91,13 @@ class Sampler:
     def __init__(
         self,
         base_frames: Union[str, Path],
-        sample_path: Union[str, Path],
+        dataset_path: Union[str, Path],
         calculator=None,
         state_interval: int = 1,
     ):
         self.calculator = calculator
         self.base_frames = read(str(base_frames), index=":")
-        self.store = SampleStore(sample_path)
+        self.store = SampleStore(dataset_path)
         self.state_interval = int(state_interval)
         if self.state_interval < 1:
             raise ValueError(
@@ -109,7 +109,7 @@ class Sampler:
         # is handed looking for things to build, and this dict contains the
         # calculator's own config, so passing it that way would load the teacher
         # twice.
-        self.sampler_config: Optional[dict] = None
+        self.generation_config: Optional[dict] = None
 
     # ------------------------------------------------------------- teacher lifecycle
 
@@ -144,7 +144,7 @@ class Sampler:
     def procedure_state(self) -> dict:
         """Whatever this procedure needs to pick up where it stopped.
 
-        Plain numbers, strings, dicts and arrays only -- never the sampler itself and
+        Plain numbers, strings, dicts and arrays only -- never the generator itself and
         never the calculator. 
         
         Empty by default, overwritten by subclass. 
@@ -158,21 +158,21 @@ class Sampler:
         back to their recorded lengths, so the dataset is already in the state the
         record describes by the time this runs.
 
-        Refusing by default is deliberate: a sampler that has not been taught to
+        Refusing by default is deliberate: a generator that has not been taught to
         resume must say so rather than start from the beginning and append a second
         copy of everything.
         """
         raise NotImplementedError(
-            f"{type(self).__name__} cannot resume yet. {self.sample_path} already "
-            "holds a dataset from an earlier run -- point `sample_path` somewhere "
+            f"{type(self).__name__} cannot resume yet. {self.dataset_path} already "
+            "holds a dataset from an earlier run -- point `dataset_path` somewhere "
             "else, or delete it."
         )
 
     # ----------------------------------------------------------------- dataset files
 
     @property
-    def sample_path(self) -> Path:
-        return self.store.sample_path
+    def dataset_path(self) -> Path:
+        return self.store.dataset_path
 
     @property
     def n_written(self) -> int:
@@ -202,7 +202,7 @@ class Sampler:
         """
         return {
             "generator_class": f"{type(self).__module__}.{type(self).__qualname__}",
-            "config": self.sampler_config,
+            "config": self.generation_config,
             "base_frames": frames_digest(self.base_frames),
         }
 
@@ -237,22 +237,22 @@ class Sampler:
         stored_class = stored_provenance.get("generator_class")
         if stored_class != live:
             raise ValueError(
-                f"{self.sample_path} was sampled by {stored_class}, the config asks "
+                f"{self.dataset_path} was sampled by {stored_class}, the config asks "
                 f"for {live}. One dataset is the output of one procedure -- point "
-                "`sample_path` somewhere else."
+                "`dataset_path` somewhere else."
             )
-        if self.sampler_config is None:
+        if self.generation_config is None:
             raise ValueError(
-                f"{self.sample_path} holds a dataset from an earlier run, but this "
-                "sampler was not given the config it is being asked to continue, so "
+                f"{self.dataset_path} holds a dataset from an earlier run, but this "
+                "generator was not given the config it is being asked to continue, so "
                 "there is nothing to compare against. `DistillationDataModule` "
-                "supplies it; a sampler built directly in a script must set "
-                "`sampler_config` itself."
+                "supplies it; a generator built directly in a script must set "
+                "`generation_config` itself."
             )
         refuse_changed_settings(
             self._comparable(stored_provenance),
             self._comparable(self.provenance()),
-            sample_path=self.sample_path,
+            dataset_path=self.dataset_path,
             n_written=n_written,
             explanations={
                 "base frame contents": (
@@ -306,7 +306,7 @@ class Sampler:
             self.resume_from(record)
             counts = ", ".join(f"{s}={n}" for s, n in self.split_counts.items())
             logger.info(
-                f"continuing {self.sample_path}: {self.n_written} structure(s) "
+                f"continuing {self.dataset_path}: {self.n_written} structure(s) "
                 f"already written ({counts})"
             )
 
@@ -316,7 +316,7 @@ class Sampler:
         if not self.finished and self.calculator is None:
             if teacher_factory is None:
                 raise ValueError(
-                    f"{self.sample_path} needs more structures, but this "
+                    f"{self.dataset_path} needs more structures, but this "
                     f"{type(self).__name__} has no teacher. Pass `teacher_factory` "
                     "to `generate()`, or call `attach_calculator()` first."
                 )

@@ -57,32 +57,32 @@ class SampleStore:
 
     Parameters
     ----------
-    sample_path
+    dataset_path
         Directory holding ``train.extxyz`` / ``val.extxyz`` / ``test.extxyz`` and the
         record. Created on demand rather than at construction, so building a store
         costs nothing and refusing a run leaves no directory behind.
     """
 
-    def __init__(self, sample_path: Union[str, Path]) -> None:
-        self._sample_path = Path(sample_path)
+    def __init__(self, dataset_path: Union[str, Path]) -> None:
+        self._dataset_path = Path(dataset_path)
         self._n_written = 0
         self._split_counts = {s: 0 for s in SPLITS}
 
     # ------------------------------------------------------------------- paths
 
     @property
-    def sample_path(self) -> Path:
+    def dataset_path(self) -> Path:
         """The dataset directory."""
-        return self._sample_path
+        return self._dataset_path
 
     def split_file(self, split: str) -> Path:
         """Where the structures of one split live."""
-        return split_file(self._sample_path, split)
+        return split_file(self._dataset_path, split)
 
     @property
     def record_file(self) -> Path:
         """Where the durable record lives."""
-        return state_file(self._sample_path)
+        return state_file(self._dataset_path)
 
     # ---------------------------------------------------------------- counters
 
@@ -98,7 +98,7 @@ class SampleStore:
 
     def offsets(self) -> dict:
         """Current byte length of each split file, zero where the file is absent."""
-        return split_offsets(self._sample_path)
+        return split_offsets(self._dataset_path)
 
     def digests(self) -> dict:
         """Content hash of each split file, ``None`` where the file is absent.
@@ -135,7 +135,7 @@ class SampleStore:
         The only way a structure reaches disk. Generators call this; they never open
         a file themselves.
         """
-        self._sample_path.mkdir(parents=True, exist_ok=True)
+        self._dataset_path.mkdir(parents=True, exist_ok=True)
         with open(self.split_file(split), "a") as f:
             write(f, atoms, format="extxyz")
         self._n_written += 1
@@ -164,14 +164,14 @@ class SampleStore:
                 "generator/store split. Format 2 keeps the byte-level contents in "
                 "their own section and records a content hash per split file, and "
                 "neither can be recovered from a format-1 record. There is no "
-                "migration: regenerate the dataset into a fresh `sample_path`, or "
+                "migration: regenerate the dataset into a fresh `dataset_path`, or "
                 "delete this one and start over."
             )
         if version != STATE_VERSION:
             raise ValueError(
                 f"{self.record_file} is in record format {version!r}, this code "
                 f"writes format {STATE_VERSION}. Resuming across formats is not "
-                "supported -- point `sample_path` somewhere else, or delete it."
+                "supported -- point `dataset_path` somewhere else, or delete it."
             )
         return stored
 
@@ -182,7 +182,7 @@ class SampleStore:
         and the byte-level contents, because only it knows them. One file and one
         ``os.replace`` so the sections cannot tear apart from each other.
         """
-        self._sample_path.mkdir(parents=True, exist_ok=True)
+        self._dataset_path.mkdir(parents=True, exist_ok=True)
         write_state(
             self.record_file,
             {
@@ -226,7 +226,7 @@ class SampleStore:
         datamodule's sequencing stays visible in the datamodule, and so this method
         has no hidden dependency on :meth:`load_record` having been called.
         """
-        truncate_to(self._sample_path, contents["offsets"])
+        truncate_to(self._dataset_path, contents["offsets"])
 
         recorded = contents["digests"]
         actual = self.digests()
@@ -237,11 +237,11 @@ class SampleStore:
                 for s in wrong
             )
             raise ValueError(
-                f"{self._sample_path} does not hold the structures "
+                f"{self._dataset_path} does not hold the structures "
                 f"{self.record_file} was written for:\n{lines}\n"
                 "The files are the recorded length but not the recorded content, so "
                 "they have been edited or swapped since. Continuing would append to "
-                "somebody else's dataset -- point `sample_path` somewhere else."
+                "somebody else's dataset -- point `dataset_path` somewhere else."
             )
 
         self._n_written = int(contents["n_written"])
@@ -253,4 +253,4 @@ class SampleStore:
         Without a record there is no account of what those structures are or what
         produced them, so they can neither be continued nor safely appended to.
         """
-        refuse_existing_split_files_without_state(self._sample_path)
+        refuse_existing_split_files_without_state(self._dataset_path)

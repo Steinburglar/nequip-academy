@@ -22,7 +22,7 @@ from ase import Atoms
 from ase.calculators.lj import LennardJones
 from ase.io import read, write
 
-from nequip_extension_template.sample import MDSampler, RattleSampler
+from nequip_extension_template.sample import MDGenerator, RattleGenerator
 from nequip_extension_template.data.state import STATE_FILE
 
 SPLITS = ("train", "val", "test")
@@ -57,7 +57,7 @@ def frames(tmp_path_factory):
     """Twelve distinct 8-atom periodic cells, written out at three file lengths.
 
     Distinct on purpose. A base frame is identified by its contents, so two identical
-    frames are one frame as far as the sampler is concerned, and a test built on a
+    frames are one frame as far as the generator is concerned, and a test built on a
     duplicate would pass without proving anything.
     """
     directory = tmp_path_factory.mktemp("frames")
@@ -78,35 +78,38 @@ def frames(tmp_path_factory):
     return paths
 
 
-def build(path, base_frames, sampler_class=RattleSampler, defaults=None, **overrides):
-    """A sampler plus the config record it would have been built from.
+def build(
+    path, base_frames, generator_class=RattleGenerator, defaults=None, **overrides
+):
+    """A generator plus the config record it would have been built from.
 
-    Mirrors what `DistillationDataModule` does: the same settings both construct the sampler
-    and are handed to it as the config, which it stores and later compares against.
+    Mirrors what `DistillationDataModule` does: the same settings both construct the
+    generator and are handed to it as the config, which it stores and later compares
+    against.
     Tests that change a setting change it in one place and get both.
     """
     settings = dict(RATTLE_SETTINGS if defaults is None else defaults)
     settings.update(overrides)
-    sampler = sampler_class(
+    generator = generator_class(
         calculator=LennardJones(),
         base_frames=str(base_frames),
-        sample_path=str(path),
+        dataset_path=str(path),
         **settings,
     )
-    sampler.sampler_config = {
-        "_target_": f"{sampler_class.__module__}.{sampler_class.__qualname__}",
+    generator.generation_config = {
+        "_target_": f"{generator_class.__module__}.{generator_class.__qualname__}",
         "calculator": {"_target_": "ase.calculators.lj.LennardJones"},
         "base_frames": str(base_frames),
         **settings,
     }
-    return sampler
+    return generator
 
 
 def md(path, base_frames, **overrides):
     return build(
         path,
         base_frames,
-        sampler_class=MDSampler,
+        generator_class=MDGenerator,
         defaults=MD_SETTINGS,
         **overrides,
     )
@@ -133,13 +136,13 @@ def counts(path):
     }
 
 
-def kill_after(sampler, n_structures):
+def kill_after(generator, n_structures):
     """Run until ``n_structures`` have been appended, then die, as a killed job would.
 
     A precise structure count rather than a wall-clock timeout, so a test kills at a
     known point instead of wherever the clock happened to fall.
     """
-    real_step, appended = sampler.step, [0]
+    real_step, appended = generator.step, [0]
 
     def step():
         if appended[0] >= n_structures:
@@ -147,9 +150,9 @@ def kill_after(sampler, n_structures):
         appended[0] += 1
         real_step()
 
-    sampler.step = step
+    generator.step = step
     with pytest.raises(KeyboardInterrupt):
-        sampler.generate()
+        generator.generate()
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -188,7 +191,7 @@ def test_the_record_says_what_is_actually_on_disk(reference):
     for split, digest in contents["digests"].items():
         expected = hashlib.sha256((reference / f"{split}.extxyz").read_bytes())
         assert digest == expected.hexdigest()
-    assert not (reference / "sampler_state.pt.tmp").exists()
+    assert not (reference / "generation_state.pt.tmp").exists()
 
 
 def test_the_record_stores_the_config_and_the_base_frame_contents(reference, frames):
@@ -198,7 +201,7 @@ def test_the_record_stores_the_config_and_the_base_frame_contents(reference, fra
     assert provenance["config"]["seed"] == 1
     assert provenance["config"]["base_frames"] == str(frames[10])
     assert isinstance(provenance["base_frames"], str) and provenance["base_frames"]
-    assert provenance["generator_class"].endswith("RattleSampler")
+    assert provenance["generator_class"].endswith("RattleGenerator")
 
 
 # ------------------------------------------------------------------------- resuming
@@ -213,9 +216,9 @@ def test_resuming_reproduces_an_uninterrupted_run(tmp_path, frames, reference):
     kill_after(build(path, frames[10]), 17)
     assert sum(counts(path).values()) == 17
 
-    sampler = build(path, frames[10])
-    assert sampler.generate() == 50
-    assert sampler.n_resumed == 17
+    generator = build(path, frames[10])
+    assert generator.generate() == 50
+    assert generator.n_resumed == 17
     assert digests(path) == digests(reference)
 
 
@@ -248,9 +251,9 @@ def test_a_structure_appended_after_the_last_record_write_is_truncated(
 
 def test_rerunning_a_finished_dataset_appends_nothing(reference, frames):
     before = digests(reference)
-    sampler = build(reference, frames[10])
-    assert sampler.generate() == 50
-    assert sampler.n_resumed == 50
+    generator = build(reference, frames[10])
+    assert generator.generate() == 50
+    assert generator.n_resumed == 50
     assert digests(reference) == before
 
 
@@ -323,11 +326,11 @@ def test_a_split_file_shorter_than_the_record_is_refused(reference, frames):
 
 
 def test_resuming_without_the_config_is_refused(reference, frames):
-    """A sampler built outside the CLI has nothing to compare against."""
-    sampler = build(reference, frames[10])
-    sampler.sampler_config = None
+    """A generator built outside the CLI has nothing to compare against."""
+    generator = build(reference, frames[10])
+    generator.generation_config = None
     with pytest.raises(ValueError, match="not given the config"):
-        sampler.generate()
+        generator.generate()
 
 
 # ------------------------------------------------------------------------------- md
@@ -338,5 +341,5 @@ def test_md_starts_fresh(md_reference):
 
 
 def test_md_cannot_resume_yet_and_says_so(md_reference, frames):
-    with pytest.raises(NotImplementedError, match="MDSampler cannot resume yet"):
+    with pytest.raises(NotImplementedError, match="MDGenerator cannot resume yet"):
         md(md_reference, frames[10]).generate()

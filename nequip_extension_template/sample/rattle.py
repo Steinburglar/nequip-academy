@@ -1,4 +1,4 @@
-"""Rattle/deform sampler.
+"""Rattle/deform generator.
 
 Ported from ``../distillation/scripts/gen_synthetic_geoms.py``. Each base frame is
 deformed and then rattled, once per *variant*:
@@ -24,7 +24,7 @@ import numpy as np
 from ase import Atoms
 from ase.calculators.singlepoint import SinglePointCalculator
 
-from .sampler import Sampler
+from .generator import Generator
 from .split import assign_splits
 
 def frame_key(atoms: Atoms) -> str:
@@ -64,7 +64,7 @@ def rattle_positions(rng, atoms: Atoms, max_displacement_ang: float) -> Atoms:
     return atoms
 
 
-class RattleSampler(Sampler):
+class RattleGenerator(Generator):
     """Deform and rattle each base frame, once per variant.
 
     Parameters

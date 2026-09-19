@@ -26,31 +26,31 @@ class DistillationDataModule(ASEDataModule):
     """Generate a distillation dataset, then expose it as a normal ASE datamodule.
 
     This is the first, intentionally thin, datamodule boundary: generation still uses
-    the existing sampler classes and state file. The datamodule owns the NequIP data
+    the existing generator classes and state file. The datamodule owns the NequIP data
     interface and wires the generated ``train.extxyz``/``val.extxyz``/``test.extxyz``
     files into :class:`nequip.data.datamodule.ASEDataModule`.
 
     Parameters
     ----------
-    sample_path
-        Directory holding generated split files and sampler state.
+    dataset_path
+        Directory holding generated split files and generator state.
     generation
-        Hydra config for the current sampler class, for example
-        ``nequip_extension_template.sample.RattleSampler``. It should contain the
+        Hydra config for the current generator class, for example
+        ``nequip_extension_template.sample.RattleGenerator``. It should contain the
         sampling parameters such as ``base_frames`` and split settings, but not
-        ``sample_path``.
+        ``dataset_path``.
     teacher
         Hydra config for the teacher ASE calculator. The datamodule injects this as
-        the sampler's ``calculator``. For compatibility, ``generation.calculator`` is
+        the generator's ``calculator``. For compatibility, ``generation.calculator`` is
         also accepted when ``teacher`` is omitted.
     state_interval
-        Forwarded to the sampler as its checkpoint cadence.
+        Forwarded to the generator as its checkpoint cadence.
     """
 
     def __init__(
         self,
         seed: int,
-        sample_path: Union[str, Path],
+        dataset_path: Union[str, Path],
         generation: Union[dict, DictConfig],
         teacher: Optional[Any] = None,
         state_interval: int = 1,
@@ -74,11 +74,11 @@ class DistillationDataModule(ASEDataModule):
         if any(f"{split}_file_path" in kwargs for split in SPLITS):
             raise ValueError(
                 "`DistillationDataModule` owns train/val/test file paths through "
-                "`sample_path`; do not set `data.train_file_path`, "
+                "`dataset_path`; do not set `data.train_file_path`, "
                 "`data.val_file_path`, or `data.test_file_path`."
             )
 
-        self.sample_path = Path(sample_path)
+        self.dataset_path = Path(dataset_path)
         self.generation_config = _to_container(generation)
         self.teacher_config = _to_container(teacher)
         self.state_interval = int(state_interval)
@@ -88,7 +88,7 @@ class DistillationDataModule(ASEDataModule):
             )
 
         split_paths = {
-            split: str(split_file(self.sample_path, split)) for split in SPLITS
+            split: str(split_file(self.dataset_path, split)) for split in SPLITS
         }
 
         super().__init__(
@@ -110,46 +110,46 @@ class DistillationDataModule(ASEDataModule):
             stats_manager=stats_manager,
         )
 
-    def _sampler_config(self) -> dict:
-        """Return the sampler config used for instantiation and provenance."""
+    def _generation_config(self) -> dict:
+        """Return the generator config used for instantiation and provenance."""
         if not isinstance(self.generation_config, dict):
             raise TypeError(
                 "`generation` must be a Hydra config dictionary with a `_target_`"
             )
-        sampler_config = copy.deepcopy(self.generation_config)
-        if "_target_" not in sampler_config:
+        generation_config = copy.deepcopy(self.generation_config)
+        if "_target_" not in generation_config:
             raise ValueError("`data.generation._target_` must be provided")
 
-        has_calculator = "calculator" in sampler_config
+        has_calculator = "calculator" in generation_config
         if self.teacher_config is not None and has_calculator:
             raise ValueError(
                 "provide the teacher calculator either as `data.teacher` or as "
                 "`data.generation.calculator`, not both"
             )
         if self.teacher_config is not None:
-            sampler_config["calculator"] = copy.deepcopy(self.teacher_config)
-        if "calculator" not in sampler_config:
+            generation_config["calculator"] = copy.deepcopy(self.teacher_config)
+        if "calculator" not in generation_config:
             raise ValueError(
                 "`DistillationDataModule` needs a teacher calculator in "
                 "`data.teacher` or `data.generation.calculator`"
             )
-        return sampler_config
+        return generation_config
 
-    def _instantiate_sampler(self, sampler_config: dict):
-        """Build the configured sampler, WITHOUT its teacher.
+    def _instantiate_generator(self, generation_config: dict):
+        """Build the configured generator, WITHOUT its teacher.
 
         The teacher is left out so that `generate()` can decide whether it is needed
-        at all. `sampler_config` still carries the teacher's own config, because that
+        at all. `generation_config` still carries the teacher's own config, because that
         is provenance and has to be compared whether or not the model gets loaded.
         """
-        config = {k: v for k, v in sampler_config.items() if k != "calculator"}
-        sampler = instantiate(
+        config = {k: v for k, v in generation_config.items() if k != "calculator"}
+        generator = instantiate(
             config,
-            sample_path=str(self.sample_path),
+            dataset_path=str(self.dataset_path),
             state_interval=self.state_interval,
         )
-        sampler.sampler_config = sampler_config
-        return sampler
+        generator.generation_config = generation_config
+        return generator
 
     def prepare_data(self) -> None:
         """Generate or resume the sampled dataset before NequIP loads it.
@@ -160,21 +160,21 @@ class DistillationDataModule(ASEDataModule):
         """
         # --- adapter: hydra config -> objects. A script replaces this half with
         #     ordinary construction, so everything touching `self` belongs here.
-        sampler_config = self._sampler_config()
-        teacher_config = copy.deepcopy(sampler_config["calculator"])
-        sampler = self._instantiate_sampler(sampler_config)
+        generation_config = self._generation_config()
+        teacher_config = copy.deepcopy(generation_config["calculator"])
+        generator = self._instantiate_generator(generation_config)
         teacher_factory = lambda: instantiate(teacher_config)  # noqa: E731
-        logger.info(f"preparing distillation dataset -> {self.sample_path}")
+        logger.info(f"preparing distillation dataset -> {self.dataset_path}")
 
         # --- pipeline: names only local variables, so it is paste-able verbatim
-        n_total = sampler.generate(teacher_factory=teacher_factory)
-        counts = ", ".join(f"{s}={n}" for s, n in sampler.split_counts.items())
+        n_total = generator.generate(teacher_factory=teacher_factory)
+        counts = ", ".join(f"{s}={n}" for s, n in generator.split_counts.items())
         logger.info(
-            f"{sampler.sample_path} holds {n_total} labeled structures ({counts}); "
-            f"{n_total - sampler.n_resumed} from this run, "
-            f"{sampler.n_resumed} already present"
+            f"{generator.dataset_path} holds {n_total} labeled structures ({counts}); "
+            f"{n_total - generator.n_resumed} from this run, "
+            f"{generator.n_resumed} already present"
         )
-        sampler.release_calculator()
+        generator.release_calculator()
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

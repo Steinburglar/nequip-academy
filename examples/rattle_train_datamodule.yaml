@@ -3,8 +3,8 @@
 #   nequip-train -cp $PWD/examples -cn rattle_train_datamodule
 #
 # Sampling is owned by `data:`, so there is no special `sample` run stage and no
-# top-level `sampler:` block. The datamodule materializes train/val/test extxyz
-# files under `data.sample_path`, then NequIP loads them through its normal
+# top-level `generator:` block. The datamodule materializes train/val/test extxyz
+# files under `data.dataset_path`, then NequIP loads them through its normal
 # ASEDataModule machinery.
 
 run: [train, val, test]
@@ -20,7 +20,7 @@ data:
   _recursive_: false
   seed: ${seed}
 
-  sample_path: sandbox/out/rattle_train_datamodule_dataset
+  dataset_path: sandbox/out/rattle_train_datamodule_dataset
   state_interval: 50
 
   teacher:
@@ -30,7 +30,7 @@ data:
     chemical_species_to_atom_type_map: true
 
   generation:
-    _target_: nequip_extension_template.sample.RattleSampler
+    _target_: nequip_extension_template.sample.RattleGenerator
     base_frames: sandbox/inputs/base_frames.xyz
     split: {train: 0.8, val: 0.1, test: 0.1}
     split_policy: scattered

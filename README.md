@@ -68,15 +68,15 @@ against the decorated function's module. `nequip-train` behaves the same way.
 ### Configuration
 
 <!-- Document the config sections this package adds on top of a normal nequip
-     config: `sampler`, `sample_path`, and how `run:` is extended with `sample`.
+     config: `generator`, `dataset_path`, and how `run:` is extended with `sample`.
      Point at the example configs rather than duplicating them. -->
 
 
-### Samplers
+### Generators
 
-<!-- One short subsection per sampler, with its knobs:
-       - RattleSampler — strain + per-atom rattle around each base frame
-       - MDSampler — Langevin NVT trajectory from one base frame
+<!-- One short subsection per generator, with its knobs:
+       - RattleGenerator — strain + per-atom rattle around each base frame
+       - MDGenerator — Langevin NVT trajectory from one base frame
      Say plainly which one is production-ready. `planning.md` §7 has the rattle
      algorithm and the magnitude lesson worth repeating to users. -->
 

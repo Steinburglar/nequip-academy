@@ -1,7 +1,7 @@
 """Sampling procedures driven by ``DistillationDataModule``."""
 
-from .md import MDSampler
-from .rattle import RattleSampler
-from .sampler import Sampler
+from .md import MDGenerator
+from .rattle import RattleGenerator
+from .generator import Generator
 
-__all__ = ["MDSampler", "RattleSampler", "Sampler"]
+__all__ = ["MDGenerator", "RattleGenerator", "Generator"]

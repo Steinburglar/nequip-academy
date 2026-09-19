@@ -42,7 +42,7 @@ def test_write_state_is_atomic_and_read_state_round_trips(tmp_path):
     path = state_file(tmp_path)
     payload = {
         "version": STATE_VERSION,
-        "sampler_class": "example.Sampler",
+        "generator_class": "example.Generator",
         "goal": {"config": {}, "base_frames": "a1b2c3d4"},
         "progress": {"n_written": 0},
     }
@@ -62,7 +62,7 @@ def test_refuse_changed_settings_names_what_changed(tmp_path):
         refuse_changed_settings(
             {"calculator.device": "cpu", "seed": 1},
             {"calculator.device": "cuda", "seed": 1},
-            sample_path=tmp_path,
+            dataset_path=tmp_path,
             n_written=4,
         )
     message = str(error.value)
@@ -72,13 +72,15 @@ def test_refuse_changed_settings_names_what_changed(tmp_path):
 
 
 def test_refuse_changed_settings_accepts_identical_settings(tmp_path):
-    refuse_changed_settings({"seed": 1}, {"seed": 1}, sample_path=tmp_path, n_written=4)
+    refuse_changed_settings(
+        {"seed": 1}, {"seed": 1}, dataset_path=tmp_path, n_written=4
+    )
 
 
 def test_refuse_changed_settings_reports_a_key_only_one_side_has(tmp_path):
     with pytest.raises(ValueError, match=r"extra: '<not set>' -> 7"):
         refuse_changed_settings(
-            {}, {"extra": 7}, sample_path=tmp_path, n_written=1
+            {}, {"extra": 7}, dataset_path=tmp_path, n_written=1
         )
 
 
@@ -87,7 +89,7 @@ def test_refuse_changed_settings_appends_an_explanation(tmp_path):
         refuse_changed_settings(
             {"base frame contents": "aaaa"},
             {"base frame contents": "bbbb"},
-            sample_path=tmp_path,
+            dataset_path=tmp_path,
             n_written=4,
             explanations={
                 "base frame contents": "(the file behind `base_frames` has changed, "
@@ -97,11 +99,11 @@ def test_refuse_changed_settings_appends_an_explanation(tmp_path):
 
 
 def test_split_offsets_and_truncate_to_recorded_lengths(tmp_path):
-    sample_path = tmp_path / "samples"
-    sample_path.mkdir()
-    train = split_file(sample_path, "train")
+    dataset_path = tmp_path / "samples"
+    dataset_path.mkdir()
+    train = split_file(dataset_path, "train")
     write(str(train), frame(0.0))
-    offsets = split_offsets(sample_path)
+    offsets = split_offsets(dataset_path)
     assert offsets["train"] == train.stat().st_size
     assert offsets["val"] == 0
     assert offsets["test"] == 0
@@ -110,38 +112,38 @@ def test_split_offsets_and_truncate_to_recorded_lengths(tmp_path):
         f.write(b"extra")
     assert train.stat().st_size > offsets["train"]
 
-    truncate_to(sample_path, offsets)
+    truncate_to(dataset_path, offsets)
 
     assert train.stat().st_size == offsets["train"]
 
 
 def test_truncate_to_refuses_shorter_file_than_recorded(tmp_path):
-    sample_path = tmp_path / "samples"
-    sample_path.mkdir()
-    train = split_file(sample_path, "train")
+    dataset_path = tmp_path / "samples"
+    dataset_path.mkdir()
+    train = split_file(dataset_path, "train")
     train.write_bytes(b"short")
     offsets = {"train": 10, "val": 0, "test": 0}
 
     with pytest.raises(ValueError, match="shorter than"):
-        truncate_to(sample_path, offsets)
+        truncate_to(dataset_path, offsets)
 
 
 def test_truncate_to_refuses_missing_file_with_recorded_bytes(tmp_path):
-    sample_path = tmp_path / "samples"
-    sample_path.mkdir()
+    dataset_path = tmp_path / "samples"
+    dataset_path.mkdir()
     offsets = {"train": 10, "val": 0, "test": 0}
 
     with pytest.raises(FileNotFoundError, match="does not exist"):
-        truncate_to(sample_path, offsets)
+        truncate_to(dataset_path, offsets)
 
 
 def test_refuse_existing_split_files_without_state(tmp_path):
-    sample_path = tmp_path / "samples"
-    sample_path.mkdir()
-    write(str(split_file(sample_path, "train")), frame())
+    dataset_path = tmp_path / "samples"
+    dataset_path.mkdir()
+    write(str(split_file(dataset_path, "train")), frame())
 
     with pytest.raises(FileExistsError, match=STATE_FILE):
-        refuse_existing_split_files_without_state(sample_path)
+        refuse_existing_split_files_without_state(dataset_path)
 
 
 def test_refuse_existing_split_files_allows_empty_directory(tmp_path):
@@ -150,7 +152,7 @@ def test_refuse_existing_split_files_allows_empty_directory(tmp_path):
 
 def test_state_file_payload_is_torch_loadable(tmp_path):
     path = state_file(tmp_path)
-    payload = {"version": STATE_VERSION, "sampler_class": "example.Sampler"}
+    payload = {"version": STATE_VERSION, "generator_class": "example.Generator"}
 
     write_state(path, payload)
 

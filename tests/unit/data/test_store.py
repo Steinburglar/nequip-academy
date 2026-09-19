@@ -1,6 +1,6 @@
 """Contract tests for `SampleStore`.
 
-The round-trip tests go through the real `Sampler` rather than a hand-written record,
+The round-trip tests go through the real `Generator` rather than a hand-written record,
 so that they cannot pass by sharing a misunderstanding with the store.
 """
 
@@ -12,27 +12,27 @@ from ase.io import write
 from nequip_extension_template.data.paths import SPLITS
 from nequip_extension_template.data.state import STATE_FILE, STATE_VERSION
 from nequip_extension_template.data.store import SampleStore
-from nequip_extension_template.sample.sampler import Sampler
+from nequip_extension_template.sample.generator import Generator
 
 
 def frame(x: float = 0.0) -> Atoms:
     return Atoms("Ar", positions=[[x, 0.0, 0.0]], cell=[5.0, 5.0, 5.0], pbc=True)
 
 
-def bare_sampler(tmp_path, sample_path):
-    """A `Sampler` built far enough to use its record builders, and nothing more."""
+def bare_generator(tmp_path, dataset_path):
+    """A `Generator` built far enough to use its record builders, and nothing more."""
     base = tmp_path / "base.xyz"
     write(str(base), [frame()])
-    sampler = Sampler(base_frames=base, sample_path=sample_path)
-    sampler.sampler_config = {"seed": 1, "calculator": {"device": "cpu"}}
-    return sampler
+    generator = Generator(base_frames=base, dataset_path=dataset_path)
+    generator.generation_config = {"seed": 1, "calculator": {"device": "cpu"}}
+    return generator
 
 
 # ------------------------------------------------------------------ paths
 
-def test_paths_are_derived_from_sample_path(tmp_path):
+def test_paths_are_derived_from_dataset_path(tmp_path):
     store = SampleStore(tmp_path / "ds")
-    assert store.sample_path == tmp_path / "ds"
+    assert store.dataset_path == tmp_path / "ds"
     assert store.split_file("train") == tmp_path / "ds" / "train.extxyz"
     assert store.record_file == tmp_path / "ds" / STATE_FILE
 
@@ -116,38 +116,38 @@ def test_load_record_refuses_an_unknown_format(tmp_path):
         SampleStore(path).load_record()
 
 
-# ---------------------------------------------- round trip via the sampler
+# ---------------------------------------------- round trip via the generator
 
-def test_store_reads_a_record_the_sampler_wrote(tmp_path):
+def test_store_reads_a_record_the_generator_wrote(tmp_path):
     """What the generator put in provenance comes back out unchanged."""
-    sample_path = tmp_path / "ds"
-    sampler = bare_sampler(tmp_path, sample_path)
-    sampler.append(frame(0.0), "train")
-    sampler.append(frame(1.0), "test")
-    sampler.write_state()
+    dataset_path = tmp_path / "ds"
+    generator = bare_generator(tmp_path, dataset_path)
+    generator.append(frame(0.0), "train")
+    generator.append(frame(1.0), "test")
+    generator.write_state()
 
-    record = SampleStore(sample_path).load_record()
+    record = SampleStore(dataset_path).load_record()
     assert record["provenance"]["generator_class"] == (
-        "nequip_extension_template.sample.sampler.Sampler"
+        "nequip_extension_template.sample.generator.Generator"
     )
-    assert record["provenance"]["config"] == sampler.sampler_config
+    assert record["provenance"]["config"] == generator.generation_config
     assert "base_frames" in record["provenance"]
     assert record["contents"]["n_written"] == 2
     assert record["contents"]["split_counts"] == {"train": 1, "val": 0, "test": 1}
     assert record["progress"] == {}
 
 
-def test_sampler_accepts_a_record_the_store_wrote(tmp_path):
+def test_generator_accepts_a_record_the_store_wrote(tmp_path):
     """The direction that lets a later run pick up what an earlier one recorded."""
-    sample_path = tmp_path / "ds"
-    written = bare_sampler(tmp_path, sample_path)
+    dataset_path = tmp_path / "ds"
+    written = bare_generator(tmp_path, dataset_path)
     written.store.append(frame(0.0), "train")
     written.store.save_record(written.provenance(), {})
 
-    fresh = bare_sampler(tmp_path, sample_path)
+    fresh = bare_generator(tmp_path, dataset_path)
     record = fresh.store.load_record()
     assert record["provenance"]["generator_class"] == (
-        "nequip_extension_template.sample.sampler.Sampler"
+        "nequip_extension_template.sample.generator.Generator"
     )
     assert record["contents"]["n_written"] == 1
     # the settings are unchanged, so this is the case that must NOT refuse
@@ -247,7 +247,7 @@ def test_load_record_refuses_a_format_1_record(tmp_path):
     torch.save(
         {
             "version": 1,
-            "sampler_class": "pkg.Rattle",
+            "generator_class": "pkg.Rattle",
             "goal": {"config": {"seed": 1}, "base_frames": "a1b2"},
             "progress": {
                 "n_written": 1,

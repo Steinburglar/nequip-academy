@@ -8,7 +8,7 @@ from ase.calculators.lj import LennardJones
 from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io import read, write
 
-from nequip_extension_template.sample.rattle import RattleSampler
+from nequip_extension_template.sample.rattle import RattleGenerator
 from nequip_extension_template.data.paths import SPLITS
 
 pytestmark = pytest.mark.filterwarnings("ignore:Length of split at index .*:UserWarning")
@@ -27,8 +27,8 @@ def base_frame(offset: float) -> Atoms:
     )
 
 
-def build_rattler(path: Path, base_frames: Path, **overrides: Any) -> RattleSampler:
-    """Build a CLI-like sampler with matching stored config."""
+def build_rattler(path: Path, base_frames: Path, **overrides: Any) -> RattleGenerator:
+    """Build a CLI-like generator with matching stored config."""
     settings = {
         "strain_magnitudes": [0.0],
         "n_random_strain_samples": 2,
@@ -40,19 +40,19 @@ def build_rattler(path: Path, base_frames: Path, **overrides: Any) -> RattleSamp
         "split_policy": "blocked",
     }
     settings.update(overrides)
-    sampler = RattleSampler(
+    generator = RattleGenerator(
         calculator=LennardJones(),
         base_frames=str(base_frames),
-        sample_path=str(path),
+        dataset_path=str(path),
         **settings,
     )
-    sampler.sampler_config = {
-        "_target_": f"{RattleSampler.__module__}.{RattleSampler.__qualname__}",
+    generator.generation_config = {
+        "_target_": f"{RattleGenerator.__module__}.{RattleGenerator.__qualname__}",
         "calculator": {"_target_": "ase.calculators.lj.LennardJones"},
         "base_frames": str(base_frames),
         **settings,
     }
-    return sampler
+    return generator
 
 
 def generated_frames(path: Path) -> list[Atoms]:
@@ -91,11 +91,11 @@ def assert_same_geometries(
 
 def test_rattle_splits_by_base_frame_not_variant(tmp_path: Path) -> None:
     base = tmp_path / "base.xyz"
-    sample_path = tmp_path / "sampled"
+    dataset_path = tmp_path / "sampled"
     write(str(base), [base_frame(i) for i in range(4)])
 
     build_rattler(
-        sample_path,
+        dataset_path,
         base,
         split={"train": 0.5, "val": 0.25, "test": 0.25},
         split_policy="blocked",
@@ -103,7 +103,7 @@ def test_rattle_splits_by_base_frame_not_variant(tmp_path: Path) -> None:
 
     splits_by_base_frame = {}
     for split in SPLITS:
-        split_path = sample_path / f"{split}.extxyz"
+        split_path = dataset_path / f"{split}.extxyz"
         for atoms in read(str(split_path), index=":"):
             splits_by_base_frame.setdefault(atoms.info["base_frame_key"], set()).add(
                 split
@@ -155,7 +155,7 @@ def test_rattle_labels_output_with_teacher_and_drops_input_labels(
     tmp_path: Path,
 ) -> None:
     base = tmp_path / "base.xyz"
-    sample_path = tmp_path / "sampled"
+    dataset_path = tmp_path / "sampled"
     atoms = base_frame(0)
     atoms.calc = SinglePointCalculator(
         atoms, energy=123.0, forces=np.full((len(atoms), 3), 456.0)
@@ -163,14 +163,14 @@ def test_rattle_labels_output_with_teacher_and_drops_input_labels(
     write(str(base), [atoms])
 
     build_rattler(
-        sample_path,
+        dataset_path,
         base,
         strain_magnitudes=[0.0],
         n_random_strain_samples=0,
         max_displacement_ang=0.0,
     ).generate()
 
-    [labeled] = generated_frames(sample_path)
+    [labeled] = generated_frames(dataset_path)
     assert labeled.info["base_frame"] == 0
     assert labeled.info["base_frame_key"]
     assert labeled.info["variant"] == "iso:0.0"

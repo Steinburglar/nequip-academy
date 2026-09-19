@@ -74,7 +74,7 @@ def teacher_section() -> dict:
 
 def generation_section() -> dict:
     return {
-        "_target_": "nequip_extension_template.sample.RattleSampler",
+        "_target_": "nequip_extension_template.sample.RattleGenerator",
         "base_frames": "base_frames.xyz",
         "split": {"train": 0.8, "val": 0.1, "test": 0.1},
         "split_policy": "scattered",
@@ -181,7 +181,7 @@ def student_sections() -> dict:
     }
 
 
-def config(sample_path: str, **extra) -> dict:
+def config(dataset_path: str, **extra) -> dict:
     """A full `nequip-train` config whose `data:` generates its own dataset.
 
     `ckpt_path` is deliberately absent rather than null: nequip tests for the key's
@@ -194,7 +194,7 @@ def config(sample_path: str, **extra) -> dict:
         {
             "_target_": "nequip_extension_template.data.DistillationDataModule",
             "_recursive_": False,
-            "sample_path": sample_path,
+            "dataset_path": dataset_path,
             "teacher": teacher_section(),
             "generation": generation_section(),
         }
@@ -243,14 +243,14 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def dataset_digests(sample_path: Path) -> dict:
-    return {s: digest(sample_path / f"{s}.extxyz") for s in SPLITS}
+def dataset_digests(dataset_path: Path) -> dict:
+    return {s: digest(dataset_path / f"{s}.extxyz") for s in SPLITS}
 
 
-def count_structures(sample_path: Path) -> int:
+def count_structures(dataset_path: Path) -> int:
     from ase.io import read
 
-    return sum(len(read(str(sample_path / f"{s}.extxyz"), index=":")) for s in SPLITS)
+    return sum(len(read(str(dataset_path / f"{s}.extxyz"), index=":")) for s in SPLITS)
 
 
 def expect_failure(run: TrainRun, *fragments: str) -> None:
@@ -275,9 +275,9 @@ def test_full_pipeline(work: Path) -> None:
     """The primary path: nequip's trainer owns the run, `data:` owns generation."""
     run = TrainRun(work, "full", config("out/full"))
     expect_success(run, "TRAIN RUN END", "VAL RUN END", "TEST RUN END")
-    sample_path = work / "out/full"
-    assert count_structures(sample_path) == N_STRUCTURES
-    assert (sample_path / "sampler_state.pt").exists()
+    dataset_path = work / "out/full"
+    assert count_structures(dataset_path) == N_STRUCTURES
+    assert (dataset_path / "generation_state.pt").exists()
     for name in ("best.ckpt", "last.ckpt"):
         assert (run.run_dir / name).exists(), f"{name} missing from {run.run_dir}"
 
@@ -354,12 +354,12 @@ def test_split_dataset_refused(work: Path) -> None:
     run = TrainRun(work, "split_dataset", cfg)
     expect_failure(run, "do not also set")
     assert not (work / "out/split_dataset").exists(), (
-        "refused config still created sample_path"
+        "refused config still created dataset_path"
     )
 
 
 def test_explicit_file_paths_refused(work: Path) -> None:
-    """`sample_path` owns the three split paths; setting them by hand is a mistake."""
+    """`dataset_path` owns the three split paths; setting them by hand is a mistake."""
     cfg = config("out/file_paths")
     cfg["data"]["train_file_path"] = ["nonexistent.xyz"]
     run = TrainRun(work, "file_paths", cfg)

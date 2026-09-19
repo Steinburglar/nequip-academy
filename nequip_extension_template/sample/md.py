@@ -1,10 +1,10 @@
-"""MD sampler: one trajectory, snapshots taken along it at a fixed interval.
+"""MD generator: one trajectory, snapshots taken along it at a fixed interval.
 
 Scaffolding. The dynamics are the simplest thing that samples a thermal ensemble --
 Langevin NVT from Maxwell-Boltzmann initial velocities -- and the parameters below
 are placeholders, not recommendations.
 
-This exists mainly as the second consumer of :class:`~.sampler.Sampler`, so the base
+This exists mainly as the second consumer of :class:`~.generator.Generator`, so the base
 class is checked against a procedure that is nothing like rattling:
 
 * it runs *one* trajectory, from the first base frame, and ignores the rest, where
@@ -14,12 +14,12 @@ class is checked against a procedure that is nothing like rattling:
 * its labels come from the dynamics, which already evaluated the teacher to take the
   step, so no extra teacher call is made to label a snapshot
 
-**This sampler cannot resume yet.** A count is enough for rattling, which walks a
+**This generator cannot resume yet.** A count is enough for rattling, which walks a
 fixed list, but a snapshot only exists by integrating the trajectory up to it, so
 continuing one means restoring positions, velocities and the state of the random
-number generator. Until that is built, pointing a second run at a ``sample_path``
+number generator. Until that is built, pointing a second run at a ``dataset_path``
 that already holds MD output is refused by
-:meth:`~.sampler.Sampler.restore_progress`. Fresh runs are unaffected.
+:meth:`~.generator.Generator.restore_progress`. Fresh runs are unaffected.
 
 **Assumption.** Splitting per snapshot is only sound if ``sample_interval`` is long
 enough that consecutive snapshots are decorrelated. Nothing here checks that, and
@@ -37,13 +37,13 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from ase.md.langevin import Langevin
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 
-from .sampler import Sampler
+from .generator import Generator
 from .split import assign_splits
 
 logger = logging.getLogger(__name__)
 
 
-class MDSampler(Sampler):
+class MDGenerator(Generator):
     """Run a single Langevin trajectory, keeping a snapshot every ``sample_interval``.
 
     Parameters
@@ -64,7 +64,7 @@ class MDSampler(Sampler):
     seed
         RNG seed for the initial velocities and the thermostat noise.
 
-        Unlike :class:`~.rattle.RattleSampler`, this is one *streaming* generator, and
+        Unlike :class:`~.rattle.RattleGenerator`, this is one *streaming* generator, and
         it has to be. A trajectory is sequential by nature: snapshot n is reached by
         integrating through snapshots 1..n-1, so a snapshot cannot be derived from its
         own identity alone. Resuming therefore means checkpointing the generator state

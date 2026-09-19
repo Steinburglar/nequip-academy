@@ -29,7 +29,7 @@ def write_base_frames(path: Path, n: int = 4) -> None:
 
 def generation_config(base_frames: Path) -> dict:
     return {
-        "_target_": "nequip_extension_template.sample.RattleSampler",
+        "_target_": "nequip_extension_template.sample.RattleGenerator",
         "base_frames": str(base_frames),
         "split": {"train": 0.5, "val": 0.25, "test": 0.25},
         "split_policy": "blocked",
@@ -64,10 +64,10 @@ def transforms() -> list[dict]:
     ]
 
 
-def datamodule(sample_path: Path, base_frames: Path) -> DistillationDataModule:
+def datamodule(dataset_path: Path, base_frames: Path) -> DistillationDataModule:
     return DistillationDataModule(
         seed=1,
-        sample_path=sample_path,
+        dataset_path=dataset_path,
         generation=generation_config(base_frames),
         teacher=teacher_config(),
         transforms=transforms(),
@@ -90,35 +90,35 @@ def datamodule(sample_path: Path, base_frames: Path) -> DistillationDataModule:
     )
 
 
-def split_counts(sample_path: Path) -> dict[str, int]:
+def split_counts(dataset_path: Path) -> dict[str, int]:
     return {
-        split: len(read(str(sample_path / f"{split}.extxyz"), index=":"))
+        split: len(read(str(dataset_path / f"{split}.extxyz"), index=":"))
         for split in SPLITS
     }
 
 
 def test_prepare_data_generates_pre_split_dataset(tmp_path: Path) -> None:
     base = tmp_path / "base.xyz"
-    sample_path = tmp_path / "samples"
+    dataset_path = tmp_path / "samples"
     write_base_frames(base)
 
-    dm = datamodule(sample_path, base)
-    assert dm.train_dataset_config[0]["file_path"] == str(sample_path / "train.extxyz")
-    assert dm.val_dataset_config[0]["file_path"] == str(sample_path / "val.extxyz")
-    assert dm.test_dataset_config[0]["file_path"] == str(sample_path / "test.extxyz")
+    dm = datamodule(dataset_path, base)
+    assert dm.train_dataset_config[0]["file_path"] == str(dataset_path / "train.extxyz")
+    assert dm.val_dataset_config[0]["file_path"] == str(dataset_path / "val.extxyz")
+    assert dm.test_dataset_config[0]["file_path"] == str(dataset_path / "test.extxyz")
 
     dm.prepare_data()
 
-    assert (sample_path / STATE_FILE).exists()
-    assert split_counts(sample_path) == {"train": 2, "val": 1, "test": 1}
+    assert (dataset_path / STATE_FILE).exists()
+    assert split_counts(dataset_path) == {"train": 2, "val": 1, "test": 1}
 
 
 def test_generated_files_load_through_nequip_setup(tmp_path: Path) -> None:
     base = tmp_path / "base.xyz"
-    sample_path = tmp_path / "samples"
+    dataset_path = tmp_path / "samples"
     write_base_frames(base)
 
-    dm = datamodule(sample_path, base)
+    dm = datamodule(dataset_path, base)
     dm.prepare_data()
     dm.setup("fit")
 
@@ -133,7 +133,7 @@ def test_hydra_can_instantiate_datamodule_without_recursive_teacher_load(
     tmp_path: Path,
 ) -> None:
     base = tmp_path / "base.xyz"
-    sample_path = tmp_path / "samples"
+    dataset_path = tmp_path / "samples"
     write_base_frames(base)
 
     cfg = OmegaConf.create(
@@ -141,7 +141,7 @@ def test_hydra_can_instantiate_datamodule_without_recursive_teacher_load(
             "_target_": "nequip_extension_template.data.DistillationDataModule",
             "_recursive_": False,
             "seed": 1,
-            "sample_path": str(sample_path),
+            "dataset_path": str(dataset_path),
             "teacher": teacher_config(),
             "generation": generation_config(base),
             "transforms": transforms(),
@@ -167,20 +167,20 @@ def test_hydra_can_instantiate_datamodule_without_recursive_teacher_load(
     dm = instantiate(cfg)
     assert isinstance(dm, DistillationDataModule)
     assert isinstance(dm.teacher_config, dict)
-    assert not sample_path.exists()
+    assert not dataset_path.exists()
 
     dm.prepare_data()
 
-    assert split_counts(sample_path) == {"train": 2, "val": 1, "test": 1}
+    assert split_counts(dataset_path) == {"train": 2, "val": 1, "test": 1}
 
 
 def test_completed_dataset_does_not_reinstantiate_teacher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     base = tmp_path / "base.xyz"
-    sample_path = tmp_path / "samples"
+    dataset_path = tmp_path / "samples"
     write_base_frames(base)
-    datamodule(sample_path, base).prepare_data()
+    datamodule(dataset_path, base).prepare_data()
 
     real_instantiate = datamodule_module.instantiate
 
@@ -194,4 +194,4 @@ def test_completed_dataset_does_not_reinstantiate_teacher(
 
     monkeypatch.setattr(datamodule_module, "instantiate", fail_on_teacher)
 
-    datamodule(sample_path, base).prepare_data()
+    datamodule(dataset_path, base).prepare_data()

@@ -15,7 +15,7 @@ Kept verbatim as the starting point. Superseded in places by §2 — where they 
 
 > User interface should center on specifying the "run[train, val, test, sample, distill]" line
 > Student can be similar to model, but by default be from scratch, and match the foundation model unless otherwise specified.
-> Sampler will require the most design, most open ended. How should it know which model to use in a script
+> Generator will require the most design, most open ended. How should it know which model to use in a script
 > Separate labelling from sampling?
 >
 > Steps:
@@ -74,9 +74,9 @@ rattle algorithm (§7) and the ASE artifact gotchas (§7).
 
 All implemented unless marked otherwise.
 
-**D1. Sampler owns calculator AND labeling, exactly one calculator, no separate labeler.**
+**D1. Generator owns calculator AND labeling, exactly one calculator, no separate labeler.**
 Separate `labeler` slot REJECTED (user). Labeling itself is procedure-specific, not on the base
-class: `label()` lives on `RattleSampler` only (static-structure eval); `MDSampler` gets labels
+class: `label()` lives on `RattleGenerator` only (static-structure eval); `MDGenerator` gets labels
 free from the dynamics step (Langevin already evaluates energy/forces every step — MEASURED
 0 extra teacher calls, by wrapping `calc.calculate`).
 
@@ -93,34 +93,34 @@ each subclass's job (no `sample_size` on the base class; rattle's extent =
 `len(base_frames) * len(variants)`, MD's = `n_samples`, no shared meaning to force into one key).
 
 **D4. Split assignment is per-procedure-chosen unit, computed once at generation time.**
-`assign_splits(n, ...)` labels `n` *items*; each sampler decides what `n` counts. Rattle → n =
+`assign_splits(n, ...)` labels `n` *items*; each generator decides what `n` counts. Rattle → n =
 base frames (rattles of one base frame are near-duplicates, must stay together). MD → n =
 snapshots (assumes `sample_interval` decorrelates — UNVERIFIED, see §8).
 Apportionment itself = `torch.utils.data.random_split` (nequip uses this too,
 `nequip/data/dataset/utils.py:55` — don't reimplement). `split.py` only adds: (a) index→label
 inversion (need labels before a dataset object exists, since frames are written straight to 3
 files as generated), (b) empty-split → hard `ValueError` where torch only warns.
-`split_policy` defaults differ ON PURPOSE: `MDSampler` → `"blocked"` (time-ordered, contiguous
-tail holdout stays honest if interval under-decorrelates); `RattleSampler` → `"scattered"` (base
+`split_policy` defaults differ ON PURPOSE: `MDGenerator` → `"blocked"` (time-ordered, contiguous
+tail holdout stays honest if interval under-decorrelates); `RattleGenerator` → `"scattered"` (base
 frames have no meaningful order). The `examples/*.yaml` configs set it explicitly anyway.
 
-**D5. Output = three files** `train.extxyz` / `val.extxyz` / `test.extxyz` in `sample_path`, NOT
+**D5. Output = three files** `train.extxyz` / `val.extxyz` / `test.extxyz` in `dataset_path`, NOT
 one `samples.extxyz`. Splits are frozen at generation, never recomputed at train time — this is
 what keeps growing the dataset from silently moving val/test frames into train (the fraction-
 based leakage risk that a single-file + `data.split_dataset`-fractions design would have).
 
-**D6. Restart precedence for sampling: REVERSED from §1's plan.** Live config wins; sampler
+**D6. Restart precedence for sampling: REVERSED from §1's plan.** Live config wins; generator
 diffs stored goal vs. live goal, does not silently ignore the live config. Three-way distinction:
 progress state (n_written, offsets, procedure blob) / stored goal / live goal — stored goal is a
 diff baseline + legality guard, not behavior-driving.
 
-**PARTLY IMPLEMENTED**: the diff exists (`Sampler.check_goal`) but ANY difference is FATAL,
+**PARTLY IMPLEMENTED**: the diff exists (`Generator.check_goal`) but ANY difference is FATAL,
 nothing is a warning yet and nothing is legal yet. Classification = §9 next-step #1.
 
-**D6a. Stored goal = a COPY OF THE `sampler` CONFIG, not a hand-picked list of params (user,
-settled).** A hand-written `goal()` per sampler duplicates every ctor kwarg and silently omits any
+**D6a. Stored goal = a COPY OF THE `generator` CONFIG, not a hand-picked list of params (user,
+settled).** A hand-written `goal()` per generator duplicates every ctor kwarg and silently omits any
 new one — the exact shape of the `anisotropic_strain_magnitude` bug (§7). `distill.py` hands over
-`OmegaConf.to_container(config.sampler, resolve=True)`; the sampler stores it verbatim.
+`OmegaConf.to_container(config.generator, resolve=True)`; the generator stores it verbatim.
 Two things the config alone CANNOT express, so they are stored beside it:
 - `base_frames` is a PATH. Edit the file, keep the path, and a config-vs-config diff sees nothing.
   Fixed by `frames_digest(self.base_frames)` (hashes the LOADED structures, not file bytes, so
@@ -130,34 +130,34 @@ Two things the config alone CANNOT express, so they are stored beside it:
 NO exclusion list yet (user explicit): `state_interval` and `calculator.device` are compared too,
 so a resume on a different device currently REFUSES. Deliberate — exempting keys one at a time is
 how a real difference gets waved through. Exclusions land with the classification step.
-**Consequence to know:** `state_interval` isn't in the yaml, so it needs `+sampler.state_interval=N`
+**Consequence to know:** `state_interval` isn't in the yaml, so it needs `+generator.state_interval=N`
 (hydra ADD not override), and a run started that way must be resumed with the same flag or the
 live config is missing the key → `state_interval: 5 -> <not set>`.
 
-**D7. Never pickle sampler/calculator.** Three reasons, in order: (a) a pickled sampler carries
+**D7. Never pickle generator/calculator.** Three reasons, in order: (a) a pickled generator carries
 its OLD config, and D6 says the live config wins — so the pickle buys nothing and makes it easy
 to miss an attribute; (b) compiled/CUDA-bound torch models are non-portable across nodes/GPU
 archs; (c) a pickle is coupled to class layout, so renaming an attribute silently breaks every
-existing `sample_path` — a plain dict breaks loudly via the `version` check instead.
+existing `dataset_path` — a plain dict breaks loudly via the `version` check instead.
 
-**Resume, as implemented.** `sampler_state.pt` beside the dataset holds `{version,
-sampler_class, goal: {config, base_frames}, progress: {n_written, split_counts, offsets,
+**Resume, as implemented.** `generation_state.pt` beside the dataset holds `{version,
+generator_class, goal: {config, base_frames}, progress: {n_written, split_counts, offsets,
 procedure}}`. `offsets` = byte length of each split file. Written every `state_interval`
 structures (default 1) + at end, atomically (`.pt.tmp` + `os.replace`). `generate()` order on
 resume: read → restore counters → `check_goal` → `truncate_to` → `restore_progress`.
-Refuses: unknown `version`, different `sampler_class`, split files with NO record, file shorter
-than recorded offset, `sampler_config is None`, ANY config difference. File LONGER than offset →
+Refuses: unknown `version`, different `generator_class`, split files with NO record, file shorter
+than recorded offset, `generation_config is None`, ANY config difference. File LONGER than offset →
 truncated + warned (fires even at `state_interval=1`, measured).
 
-**D7a. RNG derivation is ASYMMETRIC between samplers — load-bearing for resume.**
-- `RattleSampler`: no streaming RNG. Each structure seeded by `derive_seed(seed,
+**D7a. RNG derivation is ASYMMETRIC between generators — load-bearing for resume.**
+- `RattleGenerator`: no streaming RNG. Each structure seeded by `derive_seed(seed,
   frame_key(base_frame), variant_label)`, both module-level fns in `rattle.py`. `frame_key` =
   sha256 of numbers + positions (rounded 8) + cell (rounded 8) + pbc, truncated 16 hex chars.
   Structure depends ONLY on its own identity, never generation order — **nothing to checkpoint
   for rattle's RNG.** Variant identity is a LABEL not a position (`"iso:-0.05"`, `"aniso:0"`) so
   adding a strain magnitude doesn't renumber existing variants. `atoms.info` carries
   `base_frame`, `base_frame_key`, `variant` (MD carries `md_step` instead).
-- `MDSampler`: KEEPS one streaming `np.random.default_rng(seed)` — must, trajectory is
+- `MDGenerator`: KEEPS one streaming `np.random.default_rng(seed)` — must, trajectory is
   sequential, snapshot n only exists via integrating 1..n-1. **Resuming MD requires
   checkpointing `self.rng.bit_generator.state` alongside positions/velocities** (documented in
   `md.py` docstring, not implemented — §9 next-step #2).
@@ -168,7 +168,7 @@ truncated + warned (fires even at `state_interval=1`, measured).
 
 **D8. `sample` stays in `run`, earns its place by being omissible.**
 
-| `run` | `sample_path` | Meaning |
+| `run` | `dataset_path` | Meaning |
 |---|---|---|
 | `[sample, train, val, test]` | fresh | full distillation |
 | `[sample]` | fresh | build dataset only |
@@ -183,7 +183,7 @@ hydra folder, no sys.argv parsing, inner fn sees outer's `HydraConfig.get().runt
 Must ALWAYS pass the config (`train.main()` with no arg parses sys.argv, mints a second hydra
 folder). Consequence: `${hydra:runtime.output_dir}` in the config resolves to OUR folder —
 template's `ModelCheckpoint.dirpath`/`logger.save_dir` land in the one folder, no rewriting by us.
-Config handed over: strip `sample` from `run`, drop `sampler`/`sample_path`, point
+Config handed over: strip `sample` from `run`, drop `generator`/`dataset_path`, point
 `train_file_path`/`val_file_path`/`test_file_path` at the 3 sample files.
 
 **D10. Progress DERIVED from artifacts, no distill-level program counter.** Sample stage →
@@ -200,7 +200,7 @@ Path A vs B from whether dataset grew (only thing that knows):
   IMPLEMENTED** — `distill.py` refuses this combination instead (§9 next-step #5).
 - escape hatch: user-written `ModelFromCheckpoint`/`ModelFromPackage` builder respected, untouched.
 - **TRAP guarded against, IMPLEMENTED (`distill.py` raises).** Bump sample count + keep
-  `ckpt_path` → sampler appends frames, nequip restarts the OLD run: it resumes at the restored
+  `ckpt_path` → generator appends frames, nequip restarts the OLD run: it resumes at the restored
   epoch and stops at the same `max_epochs`, so the new structures get only the leftover epochs, or
   none if that run finished. Only the distill script can catch this: record `n_written` before
   sampling, compare after. Measured with the guard removed (`tests/e2e/test_distill_cli.py`): source run
@@ -234,11 +234,11 @@ with versioning off (D13). Sketch: hook that MOVES the outgoing `best` checkpoin
 folder before a warm start, keeping the main slot for true best on the current val set.
 
 **D15. `student_path` — SETTLED, adopt. NOT implemented (§9 next-step #4).** Symmetric to
-`sample_path`: stable home for checkpoints + D13 versioning off → training resume becomes
+`dataset_path`: stable home for checkpoints + D13 versioning off → training resume becomes
 automatic (default = resume from last/best checkpoint in `student_path`; new start = hand a new
 `student_path`). Cost accepted: we set `ModelCheckpoint.dirpath` ourselves — first real
 intervention in nequip's territory (everything else in D9 passes the trainer config through
-untouched). Record next to checkpoint: `student_state.json` w/ `{sample_path, sample_n_frames,
+untouched). Record next to checkpoint: `student_state.json` w/ `{dataset_path, sample_n_frames,
 sample_updated, hydra_run_dir, epochs, max_epochs, status, best_metric}`. Convergence readable via
 `trainer.early_stopping_callback.stopped_epoch` (0 if never fired), `trainer.current_epoch`,
 `trainer.max_epochs`, `trainer.checkpoint_callback.best_model_score` (confirmed present,
@@ -252,14 +252,14 @@ installed lightning).
   config + log (sampling log lines land there too), checkpoints once training begins — nequip's
   own convention (`configs/tutorial.yaml` v0.17.1 sets both `ModelCheckpoint.dirpath` and
   `logger.save_dir` to `${hydra:runtime.output_dir}`).
-- `sample_path` lives ELSEWHERE, side by side with the hydra folder, not nested either direction —
+- `dataset_path` lives ELSEWHERE, side by side with the hydra folder, not nested either direction —
   different lifetimes (dataset outlives any command, run folder is per-command). Nesting the hydra
-  folder INSIDE `sample_path` is REJECTED (tested): hydra creates its run dir at command START, so
-  `hydra.run.dir: ${sample_path}/...` makes hydra create `sample_path` itself → sampler sees a dir
-  with contents but no state file → hard error every fresh run. Reverse (sample_path as subdir of
-  hydra folder) is SAFE, tested fine — just never point `hydra.run.dir` at/inside `sample_path`.
+  folder INSIDE `dataset_path` is REJECTED (tested): hydra creates its run dir at command START, so
+  `hydra.run.dir: ${dataset_path}/...` makes hydra create `dataset_path` itself → generator sees a dir
+  with contents but no state file → hard error every fresh run. Reverse (dataset_path as subdir of
+  hydra folder) is SAFE, tested fine — just never point `hydra.run.dir` at/inside `dataset_path`.
 - Interruption during SAMPLING: no checkpoint to hand back, `ckpt_path` stays null, resume driven
-  entirely by `sample_path`. Interruption during TRAINING: new hydra folder on resume unless
+  entirely by `dataset_path`. Interruption during TRAINING: new hydra folder on resume unless
   `student_path` (D15) makes `dirpath` stable — this was the "resume asymmetry", resolved on paper
   by D15, not yet in code.
 - Hydra does NOT chdir (`hydra.job.chdir` unset → False, confirmed installed 1.3.2) → every
@@ -287,9 +287,16 @@ automated-test inputs belong in `tests/fixtures/`, and tutorial-specific assets 
 ## 5. Rejected designs — do not re-propose
 
 - **Separate `labeler` slot** (user). D1.
+- **A shared `label()` on the `Generator` base class** (user, 2026-09-19). Phase D listed pulling
+  `RattleGenerator.label()` up into the base. Rejected for the reason already written into the
+  base class's own module docstring: rattle calls the teacher itself, while MD reads energy and
+  forces the dynamics already computed to take the step. Producing and labeling are not separable
+  for MD-type procedures, so hoisting `label()` would either pay the teacher twice or force a fake
+  label step. Each generator keeps its own. The only shared thing is the 5-line "read results,
+  `copy()`, reattach `SinglePointCalculator`" detach — a free function at most, not an abstraction.
 - **`warm_start_from` as a second checkpoint key** (user). D11.
 - **Single `runs.jsonl` provenance file** — split-brain. Settled instead: each stage's record
-  lives with its own artifact — sampling's is the state file in `sample_path`; training's is the
+  lives with its own artifact — sampling's is the state file in `dataset_path`; training's is the
   hydra folder's `.hydra/config.yaml` + `student_state.json` (D15) next to the checkpoint.
 - **Two-command workflow (`run:[sample]` then `run:[train,val,test]`) as the sweep-race fix** —
   defeats the one-command product. Still legal per D8, just not the answer.
@@ -395,8 +402,8 @@ them. The `../distillation` crash was `dipole`/`free_energy` — real ASE proper
 some frames only. Our frames all carry exactly energy+forces from one `SinglePointCalculator`.
 
 ### No prior art in nequip core
-No sampler, rattle, active learning, MD driver. `nequip/data/_sampler.py::PartialSampler` is an
-unrelated torch DataLoader sampler. Only MD code is `nequip/ase/nosehoover.py::NoseHoover` — an
+No generator, rattle, active learning, MD driver. `nequip/data/_sampler.py::PartialSampler` is an
+unrelated torch DataLoader generator. Only MD code is `nequip/ase/nosehoover.py::NoseHoover` — an
 NVT thermostat class, not a driver.
 
 ### Compiled artifacts — currently BLOCKED
@@ -438,7 +445,7 @@ base frame, one structure per entry in `strain_magnitudes` (isotropic volume sca
 per-atom rattle bounded by `max_displacement_ang`. Variant-major ordering (confirmed): every base
 frame gets variant 0 before any gets variant 1.
 
-**Anisotropic strain bound decoupled from `strain_magnitudes`.** `RattleSampler` kwarg
+**Anisotropic strain bound decoupled from `strain_magnitudes`.** `RattleGenerator` kwarg
 `anisotropic_strain_magnitude: float = 0.05` replaces the derived `max_strain_magnitude =
 max(abs(strain_magnitudes))` inherited from `gen_synthetic_geoms.py`. The derived form coupled two
 knobs: adding one isotropic scan point silently widened the anisotropic distribution with no
@@ -458,7 +465,7 @@ strain, 0.25 Å displacement — `rattle.py`'s current defaults) fixed it. Rattl
 measured against the STRAINED parent, not the unstrained one (comparing to unstrained overstates
 spread) — confirmed correct in `rattle.py`.
 
-### ASE gotchas that bit the samplers
+### ASE gotchas that bit the generators
 - **Snapshot every kept frame w/ `atoms.copy()`.** ASE MD mutates one `Atoms` in place; appending
   the live object gives N copies of the final step.
 - **`atoms.copy()` drops `atoms.calc`.** Reattach: `snap.calc = SinglePointCalculator(snap,
@@ -485,7 +492,7 @@ spread) — confirmed correct in `rattle.py`.
 ## 8. Open problems
 
 1. **Sweep race.** Parallel sweep runs would all sample into the same 3 files simultaneously. Fix =
-   lock file in `sample_path`, undesigned. (Two-command workaround rejected, §5.)
+   lock file in `dataset_path`, undesigned. (Two-command workaround rejected, §5.)
 2. **Growing a dataset changes SPLIT ASSIGNMENT.** Re-running `assign_splits` at a larger total
    MOVES already-written items between files. Items on disk must keep their split; new items must
    be apportioned to close the gap to the target sizes at the new total. Rattle splits per base
@@ -606,7 +613,7 @@ is the part that changed.*
 
 ### 11.1 The boundary, in one picture
 
-The old `Sampler` (429 lines) held two unrelated jobs. Almost all of its bulk is job 1:
+The old `Generator` (429 lines) held two unrelated jobs. Almost all of its bulk is job 1:
 
 - **Physical** — "does the byte content on disk match the record?" Offsets, sizes, truncation,
   digests, atomic write. *Zero generator knowledge.* Universal for every procedure, forever.
@@ -616,7 +623,7 @@ The old `Sampler` (429 lines) held two unrelated jobs. Almost all of its bulk is
 Everything below follows from cutting there and nowhere else.
 
 **The generator's size was never the problem.** `rattle.py` is 212 lines and is essentially pure
-science; `sampler.py` is 429 and is essentially all file mechanics. Extract the physical layer and
+science; `generator.py` is 429 and is essentially all file mechanics. Extract the physical layer and
 the generator is already small. Do NOT invent further abstractions to shrink it — in particular,
 do not take its state away from it. A generator owning a rich, procedure-specific state dict is
 correct; MD's state (positions, velocities, RNG bit generator, step count) is irreducible
@@ -631,7 +638,7 @@ Three reviewable properties, in order of how easy they are to check:
 1. `sample/`, `data/store.py`, `data/state.py` and `data/paths.py` import **no** nequip, hydra,
    lightning or omegaconf. Grep-checkable, so it cannot rot quietly. Only `data/datamodule.py`
    is allowed those.
-2. `Sampler.generate()` is the pipeline and stays there. A standalone script constructs a
+2. `Generator.generate()` is the pipeline and stays there. A standalone script constructs a
    generator and calls it — that is exactly the script used to verify the byte-identity claims
    in Phases A and B, and it never touched the datamodule.
 3. Wherever coordination code sits, **the pipeline half must contain no `self`.** A
@@ -640,7 +647,7 @@ Three reviewable properties, in order of how easy they are to check:
    a script replaces it with direct construction) and a pipeline half that touches only local
    variables and is therefore paste-able verbatim.
 
-**Known wart:** a standalone script must set `sampler.sampler_config` by hand or resume refuses
+**Known wart:** a standalone script must set `generator.generation_config` by hand or resume refuses
 with "was not given the config". That field exists only because hydra's `instantiate` would build
 the teacher twice if it were a constructor argument -- a datamodule concern leaking into the
 standalone path. The clean fix is for a generator to derive its own provenance from its
@@ -697,13 +704,13 @@ nequip_extension_template/
     store.py        SampleStore                             [to add]
     datamodule.py   DistillationDataModule                  [exists, thin]
   sample/
-    sampler.py      Generator base                          [to shrink]
+    generator.py      Generator base                          [to shrink]
     rattle.py       RattleGenerator                         [science only]
     md.py           MDGenerator                             [science only]
     split.py        split assignment policy                 [unchanged]
 ```
 
-**1. `SampleStore`** — the thin I/O object. Owns `sample_path` and, conceptually, nothing else.
+**1. `SampleStore`** — the thin I/O object. Owns `dataset_path` and, conceptually, nothing else.
 
 ```python
 append(atoms, split)                 # write, track offsets + counts
@@ -751,13 +758,13 @@ checks nothing; it only sequences.
 ### 11.4 The restart algorithm — the acceptance test for this design
 
 Shown below as a free function to make 11.1a's point: it names only `generator` and `store`, so
-it is paste-able into a script. Today it lives as `Sampler.generate()` and `prepare_data()` calls
+it is paste-able into a script. Today it lives as `Generator.generate()` and `prepare_data()` calls
 it; either placement is fine so long as no `self` appears in these lines.
 
 ```python
 def prepare_data(self):
     generator = instantiate(self.generation)        # teacher NOT loaded yet
-    store = SampleStore(self.sample_path)
+    store = SampleStore(self.dataset_path)
     record = store.load_record()
 
     if record is None:
@@ -805,7 +812,7 @@ data:
   _target_: nequip_extension_template.data.DistillationDataModule
   _recursive_: false
   seed: 1
-  sample_path: /scratch/me/cdp_distill_samples
+  dataset_path: /scratch/me/cdp_distill_samples
   state_interval: 50
 
   teacher:
@@ -840,7 +847,7 @@ data:
 - Generation finishes entirely in `prepare_data()`, before dataloader workers exist. No public
   "distillation Dataset" with generation side effects — `ASEDataset` stays boring.
 
-Config migration removes: top-level `sample_path`, top-level `sampler`, the `sample` run type, code
+Config migration removes: top-level `dataset_path`, top-level `generator`, the `sample` run type, code
 that patches `data.*_file_path`, and the hard requirement that `data._target_` is `ASEDataModule`.
 Keeps: three pre-split extxyz files, no NequIP `split_dataset` for generated data, split membership
 frozen at generation time, restart/provenance guardrails.
@@ -854,7 +861,7 @@ frozen at generation time, restart/provenance guardrails.
 3. **`attach_calculator()` replaces `calculator=None`.** The no-teacher fast path is currently a
    hack — construct with a `None` calculator and hope nothing touches it. Attaching makes the fast
    path the normal construction rather than a special case.
-4. **`label()` moves out of `RattleSampler` to a shared module function.** Teacher call +
+4. **`label()` moves out of `RattleGenerator` to a shared module function.** Teacher call +
    `SinglePointCalculator` has nothing to do with rattling. Caveat: generators cannot uniformly
    yield *unlabeled* frames — MD needs the calculator during integration and gets its labels free
    from the dynamics, while rattle must ask. So: shared helper, generator decides when to call it.
@@ -866,15 +873,15 @@ frozen at generation time, restart/provenance guardrails.
 Committed (`9a6f92f`, `b02b74c`):
 - `DistillationDataModule` subclasses `ASEDataModule`, computes split paths in `__init__`,
   generates in `prepare_data()`, has a no-teacher fast path for complete datasets.
-- `data.generation._target_` still points at the existing sampler classes.
+- `data.generation._target_` still points at the existing generator classes.
 - Tracked example `examples/rattle_train_datamodule.yaml`.
-- Generation still driven by the old `Sampler.generate()`; restart still owned by sampler
-  machinery (`sampler_state.pt`, config diff, base-frame digest, byte offsets, truncation,
+- Generation still driven by the old `Generator.generate()`; restart still owned by generator
+  machinery (`generation_state.pt`, config diff, base-frame digest, byte offsets, truncation,
   `restore_progress()`).
 
 Uncommitted working tree — the old plan's "Phase 1", mechanical extraction, complete and green
 (`pytest -q` → 46 passed):
-- `data/paths.py`, `data/state.py` added; `sampler.py` −130 lines, now delegating wrappers;
+- `data/paths.py`, `data/state.py` added; `generator.py` −130 lines, now delegating wrappers;
   `datamodule.py` uses the shared refusal helper; `tests/unit/data/test_state.py` (17 tests).
 
 **One correction this rewrite forces:** `data/state.py::check_goal()` takes `base_frames` and
@@ -887,7 +894,7 @@ else in `paths.py`/`state.py` survives.
 Each phase is one approved step, runnable at its end, with the full suite green. No bundling.
 
 **Phase A — `SampleStore`.** Add `data/store.py` wrapping the existing `state.py` free functions in
-an object holding `sample_path` + counters. `Sampler` uses it internally and delegates; public
+an object holding `dataset_path` + counters. `Generator` uses it internally and delegates; public
 behavior and record shape (v1) unchanged. Purely mechanical.
 - Check: `pytest -q`; generated split files byte-identical to before.
 
@@ -913,12 +920,12 @@ Two things learned here:
   microseconds. A large dataset should raise `state_interval`. An incremental hash carried across
   appends would fix the asymptotics and was rejected as optimising for a size nobody runs.
 
-**Phase D — remove the duplicated restore path.** Teacher half DONE 2026-09-19; `label()`
-extraction still outstanding.
+**Phase D — remove the duplicated restore path.** DONE 2026-09-19. The `label()` extraction
+this phase also listed was REJECTED (user, 2026-09-19) — see §5.
 
-`Sampler.calculator` is now optional and `generate(teacher_factory=...)` calls the factory only
+`Generator.calculator` is now optional and `generate(teacher_factory=...)` calls the factory only
 after establishing there is something left to produce. `_finished_without_teacher` is deleted, as
-is `_instantiate_sampler`'s `load_teacher` flag.
+is `_instantiate_generator`'s `load_teacher` flag.
 
 What this did and did not change: the laziness itself already worked -- that was the point of
 `_finished_without_teacher`. What it removes is doing it with TWO generators. On the resume path
@@ -932,16 +939,27 @@ Care taken: an early `return` for a finished dataset would have skipped the fina
 that `generate()` always did. The guard is on acquiring the teacher only, so everything else below
 still runs and a finished run rewrites its record exactly as before.
 
-**`Sampler.generate()` STAYS** (user, 2026-09-18). An earlier draft of this phase had
+**`Generator.generate()` STAYS** (user, 2026-09-18). An earlier draft of this phase had
 `prepare_data()` absorb the loop and `generate()` deleted; that would make nequip a hard
 dependency of generating data and breaks 11.1a. The datamodule remains a caller.
 - Check: `pytest -q`; `pytest -m e2e`; 11.1a property 1 still greps clean.
 
-**Phase E — rename.** `Sampler` → `Generator`, `RattleSampler` → `RattleGenerator`, `MDSampler` →
-`MDGenerator`, old names kept as aliases. `sampler_state.pt` → `generation_state.pt` (free now:
-format 2 already refuses every older record, so the filename carries no compatibility weight).
-Examples and `docs/tutorial/` updated. Error messages say "generator".
-- Check: `pytest -q`; `pytest -m e2e`.
+**Phase E — rename.** DONE 2026-09-19. `Generator` → `Generator`, `RattleGenerator` →
+`RattleGenerator`, `MDGenerator` → `MDGenerator`, module `sample/generator.py` → `sample/generator.py`,
+`dataset_path` → `dataset_path` (a user-facing yaml key), `generation_config` → `generation_config`,
+`generation_state.pt` → `generation_state.pt` (free: format 2 already refuses every older record, so
+the filename carries no compatibility weight). Error messages say "generator".
+
+Two departures from the phase as originally written, both the user's call (2026-09-19):
+- **No aliases.** The plan said keep the old names as aliases. The package is unreleased and has
+  no external importers, so an alias is pure debt on a repo being cleaned up for shipping.
+- **`docs/tutorial/` NOT updated.** It still documents the deleted `nequip-distill` CLI and is
+  already broken; renaming classes inside it is churn on a file that needs a rewrite anyway. It
+  stays on the known-debt list until the port is decided.
+
+The package directory stays `sample/` and `SampleStore` keeps its name — "sampling" is still the
+right word for what rattle and MD do; only the class that drives the procedure became a generator.
+- Check: `pytest -q` (72 passed); `pytest -m e2e` (7 passed); 11.1a property 1 greps clean.
 
 **Phase 0 (done, 2026-09-18) — `nequip-distill` deleted.** User's call: delete outright, with no
 generate-only replacement for now. Removed `scripts/distill.py` and its entry point, `configs/`,
@@ -1022,9 +1040,9 @@ Semantics: training crash with unchanged dataset resumes fine; sampling crash re
 then trains; dataset extended + Lightning `ckpt_path` refuses; dataset extended + warm start is an
 explicit model-from-checkpoint path, never `ckpt_path`.
 
-**Lock.** `sample_path/.generation.lock` around datamodule generation. Acquire, re-read record
+**Lock.** `dataset_path/.generation.lock` around datamodule generation. Acquire, re-read record
 after acquiring, generate or no-op, release. Lightning's rank-zero `prepare_data()` is not
-sufficient — it does not protect against two separate jobs pointing at one `sample_path`.
+sufficient — it does not protect against two separate jobs pointing at one `dataset_path`.
 
 ### 11.11 Test plan
 
@@ -1055,7 +1073,7 @@ the measured GPU nondeterminism and the tolerance-based check that replaces it t
 - Hydra `_target_` values are import paths, independent of cwd.
 - Hydra `-cp` must be absolute; relative `-cp ../configs` gets read as a package path such as
   `nequip.scripts.configs`.
-- Ordinary file paths in YAML (`model_path`, `base_frames`, `sample_path`) resolve against process
+- Ordinary file paths in YAML (`model_path`, `base_frames`, `dataset_path`) resolve against process
   cwd, not the config location.
 - The untracked sandbox-local config `sandbox/configs/rattle_train_datamodule_local.yaml` differs
   from the tracked example only in path locality, and is launched from `sandbox/out`:

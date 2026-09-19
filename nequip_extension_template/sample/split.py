@@ -1,6 +1,6 @@
 """Assigning things to train/val/test.
 
-Not part of the base :class:`~.sampler.Sampler`. The base class only creates the
+Not part of the base :class:`~.generator.Generator`. The base class only creates the
 three empty boxes and knows where each is written; each procedure decides what fills
 them, and this labels ``n`` of whatever that procedure considers independent.
 
@@ -61,9 +61,9 @@ def assign_splits(
         )
     fractions = {s: float(fractions.get(s, 0.0)) for s in SPLITS}
 
-    generator = torch.Generator().manual_seed(seed)
+    rng = torch.Generator().manual_seed(seed)
     subsets = torch.utils.data.random_split(
-        range(n), [fractions[s] for s in SPLITS], generator=generator
+        range(n), [fractions[s] for s in SPLITS], generator=rng
     )
 
     # torch only warns when a split comes out empty, and the symptom would surface far
