@@ -128,8 +128,9 @@ $CONDA/bin/nequip-train -cp $PWD/examples -cn rattle_train_datamodule
 - **`ckpt_path: null` must NOT appear.** nequip tests for the KEY's presence, not its value, so a
   null value sends the run down the restart path with nothing to load. Omit it entirely.
 - Installed `pip install -e . --no-deps --no-build-isolation` into nequip311. Editable, so edits
-  are live. Needed `license = {file = "LICENSE"}` dropped from `pyproject.toml` first — no
-  LICENSE file exists.
+  are live. `pyproject.toml` declares the license PEP 639 style (`license = "MIT"` +
+  `license-files = ["LICENSE"]`), which is why `build-system.requires` is `setuptools>=77` — the
+  old `license = {file = ...}` table is deprecated on setuptools 81.
 - **All real runs go through Slurm (user explicit, never the login node.)** Smoke-scale generator
   tests are fine on login.
 - `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` fixes `GLIBCXX_3.4.31 not found`.
@@ -196,8 +197,7 @@ paths. `testartifacts/` and `configs/` have been retired. **No MD example any mo
 
 - Package still named `nequip_extension_template`. Rename touches `pyproject.toml` (`name`,
   `packages.find.include`, entry-points, `version.attr`) + every intra-package import.
-- `pyproject.toml` placeholders: `description = "TODO"`, `authors = [{name = "your name here"}]`.
-  No LICENSE file.
+- `pyproject.toml` placeholder: `description = "TODO"`. MIT `LICENSE` and `authors` are done.
 - `README.md` is a scaffold with empty sections — **user writes the prose, do not fill it in.**
 - `README.md` and `docs/tutorial/` still describe the deleted `nequip-distill` CLI. The tutorial
   is SHIPPED (public Colab link) and is therefore BROKEN until its config and section are ported
