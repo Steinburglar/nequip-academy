@@ -509,6 +509,103 @@ spread) — confirmed correct in `rattle.py`.
 6. **The teacher in `sandbox/inputs/` is a *student* model from `../distillation/`** — a
    stand-in, fine for plumbing, not a real teacher. Free sanity check: teacher E on an unrattled
    base frame vs its DFT E — −374.61 vs −374.51 eV on frame 0 (64 atoms, ~0.1 eV total).
+7. **"Test error" currently means error against the TEACHER, which is the wrong default** (user,
+   2026-09-21). `run: [train, val, test]` reports metrics on the generated test split, whose labels
+   came from the teacher. When anyone asks for a student's test error on energies or forces they
+   almost always mean error against the actual ground truth (the DFT the teacher was trained on),
+   not against the teacher. Student-vs-teacher is a meaningful quantity — it is distillation
+   fidelity — but it is not a bound on student-vs-DFT: the student's error against the teacher and
+   the teacher's own error against DFT can cancel or compound. Shipping the teacher-relative number
+   under the unqualified name "test error" invites a reader to quote it as if it were the
+   DFT-relative one.
+
+   **Resolution (settled with the user, 2026-09-21).** One test set, DFT-labelled, supplied by the
+   user. The generator produces train+val only (`split` defaults to `test: 0.0`). `nequip-train`
+   reports student-vs-DFT, and no teacher inference is triggered by the test stage. The teacher is
+   NOT out of the training run — it is still loaded in `prepare_data()` to label train/val, exactly
+   as today; what it is out of is testing. Every teacher comparison is post-hoc.
+   Implementation cost is small: relax the datamodule's refusal of an explicit `*_file_path` for
+   `test` only (the refusal is pinned by an e2e test), so the user's DFT file becomes the test
+   split while train/val stay generated.
+
+   **Why post-hoc is also the cheap branch, not a concession.** Teacher-vs-DFT does not depend on
+   the student at all — it is a property of (that teacher, that test set), constant across every
+   student ever distilled from that teacher and across epochs. A post-hoc tool computes it once per
+   comparison. The student half is already free: Lightning's CSVLogger writes `test0_epoch/forces_mae`,
+   `test0_epoch/per_atom_energy_rmse` and friends to `metrics.csv` in the hydra output dir, so a
+   comparison script can read the student's numbers off disk and only has to evaluate the teacher.
+
+   Report the teacher's error on the same test set beside the student's: student-vs-DFT alone
+   cannot distinguish "distillation failed" from "the teacher was already bad here". With both, the
+   teacher error is the floor and the difference is the distillation gap.
+
+   **The post-hoc tool.** Takes a teacher, one or more students, and a labelled test file; emits a
+   table and a Pareto plot of accuracy against inference time (the teacher as a single point, the
+   students tracing a frontier). Explicitly NOT `nequip-distill` resurrected — Phase 0 deleted that
+   because sampling belonged in the datamodule, and grading is neither sampling nor training. No
+   run stages, no hydra config schema, no resume semantics, no contact with the generation
+   boundary. Timing has to be measured honestly or the plot lies: fixed batch size, warmup passes
+   discarded, median over repeats with the spread shown, all points on one GPU, compiled/uncompiled
+   stated on the figure. Parameter count is not a substitute x-axis — it misses what `l_max` costs.
+
+   **Rejected.**
+   - *Teacher inference inside the test stage, via a callback or a "distillation mode" that the
+     run detects.* Two reasons, of unequal weight. The one that carries: it puts a constant into a
+     per-epoch metrics stream, at the cost detailed under "Deferred" below. The weaker one: implicit
+     mode detection makes reported metrics mean different things depending on surrounding config —
+     the same disease this item exists to cure.
+
+     An earlier draft also argued that a 50-student sweep would pay 50 identical teacher passes.
+     That argument does NOT stand on its own (user, 2026-09-21). The teacher already labels
+     train/val inside the training run, and a sweep avoids repeating that work only because the
+     result is PERSISTED — `dataset_path` plus a completeness record, which is what the no-teacher
+     fast path reads. So the real distinction is persisted-with-a-record vs recomputed-in-process,
+     not train/val vs test, and it is a caching property rather than an argument against in-loop
+     comparison: a dual-labelled test file would be exactly that cache. Anything sweep-shaped here
+     is downstream of §8.1 anyway, since parallel runs into one `dataset_path` have no lock and
+     corrupt each other today. Fix sweeps first, then revisit; the decision above does not depend
+     on this.
+   - *Two test dataloaders (`test0` external DFT, `test1` generated teacher-labelled).*
+     Mechanically nearly free and natively supported: `ASEDataModule` takes `test_file_path` as
+     `str` or `List[str]`, the base datamodule supports multiple test datasets (hence the `val0`
+     /`test0` naming), and there is in-tree precedent — `samd23_datamodule.py` appends an OOD test
+     set, `_3bpa_datamodule.py` passes a list. Rejected anyway: the sets are named positionally, so
+     the reader gets two numbers and no way to tell which is which, reintroducing exactly the
+     ambiguity being fixed. Available if someone deliberately wants the fidelity number.
+   - *A "pre" script that writes teacher labels onto the DFT test set before training.* Once
+     teacher labels no longer flow into the run, its only remaining job is computing
+     teacher-vs-DFT, which IS the post-hoc tool. Two scripts, one computation.
+
+   **Deferred, with the reason.** Carrying teacher labels through nequip's pipeline so the test
+   stage prints student and teacher errors side by side. Attractive — it is the first question
+   anyone asks on getting a student back — and it needs no teacher inference, since both label sets
+   would already be on disk. But teacher-vs-DFT is then not a model evaluation at all: it is
+   arithmetic over two columns of a file, a constant independent of the student and of the epoch.
+   Surfacing it through the metrics system means registering custom fields, getting the ASE reader
+   to pick them up, batching them correctly as per-atom vs per-frame, and adding a metric or
+   callback that ignores the model output — real nequip-internals coupling that breaks on nequip
+   upgrades, all to put a constant into a per-epoch stream. Revisit if reading the number from a
+   second place turns out to annoy in practice. (The leftover `_keys.py` placeholder registration
+   is the mechanism it would use.) If dual-labelled files ever do exist, the teacher columns need
+   clearly non-standard names, so that such a file wandering into `train_file_path` fails loudly
+   instead of silently training against the wrong labels.
+
+   **Optional, not required (user, 2026-09-21).** A leakage check that the supplied DFT test set
+   does not overlap the base frames the student was rattled around. The datamodule is the natural
+   home — it holds the base frames and now sees the test path, and `frames_digest` already hashes
+   parsed structures — and post-hoc would be too late to act on. Not needed for a first version:
+   most implementations make no such guarantee and train/test hygiene is the user's
+   responsibility. Related caveat worth documenting rather than guarding: a near-equilibrium DFT
+   test set says little about the student's quality in the rattled, strained regime it was trained
+   on.
+
+   **Energy zero.** Teacher labels and DFT labels may sit on different absolute energy references,
+   and the student's per-type energy shifts are fit from teacher-labelled training data.
+   Total-energy MAE against an external DFT set can then be dominated by a constant offset that
+   says nothing about model quality; forces are immune. Decide whether the external energy error is
+   reported raw, per-atom, or shift-corrected. Does not bite the current sandbox setup — that
+   teacher was trained on the same DFT — but bites hard on a fine-tuned foundation model, which is
+   the real use case.
 
 ---
 
