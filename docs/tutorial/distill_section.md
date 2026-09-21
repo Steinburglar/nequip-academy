@@ -33,7 +33,7 @@ in one command.
 
 ```python
 # @title Installing nequip-distill
-!pip install --quiet git+https://github.com/Steinburglar/NequipAcademy.git
+!pip install --quiet git+https://github.com/Steinburglar/nequip-academy.git
 ```
 
 <!-- TODO: repo private; make public or use a token-authenticated clone. -->
@@ -43,7 +43,7 @@ in one command.
 ```python
 # @title Packaging the fine-tuned model as our teacher
 !nequip-package build /content/results_ft/best.ckpt /content/teacher.nequip.zip
-!wget --quiet https://raw.githubusercontent.com/Steinburglar/NequipAcademy/main/docs/tutorial/distill.yaml
+!wget --quiet https://raw.githubusercontent.com/Steinburglar/nequip-academy/main/docs/tutorial/distill.yaml
 ```
 
 ## [markdown]

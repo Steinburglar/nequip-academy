@@ -1,4 +1,4 @@
-# NequipAcademy — design record
+# NequIP Academy — design record
 
 The **why** behind the code, plus every fact measured about someone else's code.
 On-demand reading, not per-turn context — `CLAUDE.md` holds the state an agent needs every
@@ -558,8 +558,8 @@ Ours:
 against. User tests in Colab.
 
 Colab link needs the repo PUBLIC and pushed to `main`:
-`colab.research.google.com/github/Steinburglar/NequipAcademy/blob/main/docs/tutorial/NequIP_Distill_Tutorial.ipynb`.
-Two URLs hardcode `Steinburglar/NequipAcademy@main` (the `pip install git+` cell and the `wget` of
+`colab.research.google.com/github/Steinburglar/nequip-academy/blob/main/docs/tutorial/NequIP_Distill_Tutorial.ipynb`.
+Two URLs hardcode `Steinburglar/nequip-academy@main` (the `pip install git+` cell and the `wget` of
 `distill.yaml`) — both live in `distill_section.md`; change there and regenerate.
 
 **Validated on GPU (job 42612714, `gpu_test`, 8m06s, 2026-08-28)**: the packaged-teacher config
@@ -1079,11 +1079,11 @@ the measured GPU nondeterminism and the tolerance-based check that replaces it t
   from the tracked example only in path locality, and is launched from `sandbox/out`:
 
 ```bash
-cd /n/home12/lsteinberger/code/NequipAcademy/sandbox/out
+cd /n/home12/lsteinberger/code/nequip-academy/sandbox/out
 PATH="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311/bin:$PATH" \
 CONDA_PREFIX="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311" \
 HYDRA_FULL_ERROR=1 \
-nequip-train -cp /n/home12/lsteinberger/code/NequipAcademy/sandbox/configs \
+nequip-train -cp /n/home12/lsteinberger/code/nequip-academy/sandbox/configs \
              -cn rattle_train_datamodule_local
 ```
 

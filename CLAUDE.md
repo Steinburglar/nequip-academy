@@ -1,4 +1,4 @@
-# NequipAcademy — Agent Context
+# NequIP Academy — Agent Context
 
 Durable state only. **Design rationale, measured facts about nequip/lightning/ASE, rejected
 designs, open problems and the ordered next steps all live in `planning.md`** — read it on

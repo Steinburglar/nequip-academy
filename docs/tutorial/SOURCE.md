@@ -41,4 +41,4 @@ notebook directly. `build_notebook.py` copies the upstream cells verbatim and ap
 ours, so the two notebooks share a common prefix cell-for-cell.
 
 Colab link, once pushed to a public `main`:
-https://colab.research.google.com/github/Steinburglar/NequipAcademy/blob/main/docs/tutorial/NequIP_Distill_Tutorial.ipynb
+https://colab.research.google.com/github/Steinburglar/nequip-academy/blob/main/docs/tutorial/NequIP_Distill_Tutorial.ipynb

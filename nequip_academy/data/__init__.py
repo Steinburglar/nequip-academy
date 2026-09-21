@@ -1,4 +1,4 @@
-"""Data modules for NequipAcademy."""
+"""Data modules for NequIP Academy."""
 
 from .datamodule import DistillationDataModule
 
