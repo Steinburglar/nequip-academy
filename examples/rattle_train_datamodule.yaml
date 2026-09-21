@@ -16,7 +16,7 @@ model_type_names: [Cs, H, P, O]
 monitored_metric: val0_epoch/weighted_sum
 
 data:
-  _target_: nequip_extension_template.data.DistillationDataModule
+  _target_: nequip_academy.data.DistillationDataModule
   _recursive_: false
   seed: ${seed}
 
@@ -30,7 +30,7 @@ data:
     chemical_species_to_atom_type_map: true
 
   generation:
-    _target_: nequip_extension_template.sample.RattleGenerator
+    _target_: nequip_academy.sample.RattleGenerator
     base_frames: sandbox/inputs/base_frames.xyz
     split: {train: 0.8, val: 0.1, test: 0.1}
     split_policy: scattered

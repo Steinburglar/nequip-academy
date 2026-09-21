@@ -41,11 +41,11 @@ import numpy as np
 from ase import Atoms
 from ase.io import read
 
-from nequip_extension_template.data.state import (
+from nequip_academy.data.state import (
     flatten,
     refuse_changed_settings,
 )
-from nequip_extension_template.data.store import SampleStore
+from nequip_academy.data.store import SampleStore
 
 logger = logging.getLogger(__name__)
 

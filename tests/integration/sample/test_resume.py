@@ -22,8 +22,8 @@ from ase import Atoms
 from ase.calculators.lj import LennardJones
 from ase.io import read, write
 
-from nequip_extension_template.sample import MDGenerator, RattleGenerator
-from nequip_extension_template.data.state import STATE_FILE
+from nequip_academy.sample import MDGenerator, RattleGenerator
+from nequip_academy.data.state import STATE_FILE
 
 SPLITS = ("train", "val", "test")
 

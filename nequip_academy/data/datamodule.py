@@ -10,7 +10,7 @@ from hydra.utils import instantiate
 from nequip.data.datamodule import ASEDataModule
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from nequip_extension_template.data.paths import SPLITS, split_file
+from nequip_academy.data.paths import SPLITS, split_file
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class DistillationDataModule(ASEDataModule):
         Directory holding generated split files and generator state.
     generation
         Hydra config for the current generator class, for example
-        ``nequip_extension_template.sample.RattleGenerator``. It should contain the
+        ``nequip_academy.sample.RattleGenerator``. It should contain the
         sampling parameters such as ``base_frames`` and split settings, but not
         ``dataset_path``.
     teacher

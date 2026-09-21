@@ -3,8 +3,8 @@ import pytest
 from ase import Atoms
 from ase.io import write
 
-from nequip_extension_template.data.paths import SPLITS, split_file
-from nequip_extension_template.data.state import (
+from nequip_academy.data.paths import SPLITS, split_file
+from nequip_academy.data.state import (
     STATE_FILE,
     STATE_VERSION,
     flatten,

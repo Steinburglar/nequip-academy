@@ -8,8 +8,8 @@ from ase.calculators.lj import LennardJones
 from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io import read, write
 
-from nequip_extension_template.sample.rattle import RattleGenerator
-from nequip_extension_template.data.paths import SPLITS
+from nequip_academy.sample.rattle import RattleGenerator
+from nequip_academy.data.paths import SPLITS
 
 pytestmark = pytest.mark.filterwarnings("ignore:Length of split at index .*:UserWarning")
 

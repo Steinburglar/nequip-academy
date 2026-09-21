@@ -6,10 +6,10 @@ from ase.io import read, write
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-import nequip_extension_template.data.datamodule as datamodule_module
-from nequip_extension_template.data import DistillationDataModule
-from nequip_extension_template.data.paths import SPLITS
-from nequip_extension_template.data.state import STATE_FILE
+import nequip_academy.data.datamodule as datamodule_module
+from nequip_academy.data import DistillationDataModule
+from nequip_academy.data.paths import SPLITS
+from nequip_academy.data.state import STATE_FILE
 
 pytestmark = pytest.mark.filterwarnings("ignore:Length of split at index .*:UserWarning")
 
@@ -29,7 +29,7 @@ def write_base_frames(path: Path, n: int = 4) -> None:
 
 def generation_config(base_frames: Path) -> dict:
     return {
-        "_target_": "nequip_extension_template.sample.RattleGenerator",
+        "_target_": "nequip_academy.sample.RattleGenerator",
         "base_frames": str(base_frames),
         "split": {"train": 0.5, "val": 0.25, "test": 0.25},
         "split_policy": "blocked",
@@ -138,7 +138,7 @@ def test_hydra_can_instantiate_datamodule_without_recursive_teacher_load(
 
     cfg = OmegaConf.create(
         {
-            "_target_": "nequip_extension_template.data.DistillationDataModule",
+            "_target_": "nequip_academy.data.DistillationDataModule",
             "_recursive_": False,
             "seed": 1,
             "dataset_path": str(dataset_path),

@@ -35,8 +35,8 @@ from typing import Optional, Union
 from ase import Atoms
 from ase.io import write
 
-from nequip_extension_template.data.paths import SPLITS, split_file
-from nequip_extension_template.data.state import (
+from nequip_academy.data.paths import SPLITS, split_file
+from nequip_academy.data.state import (
     STATE_VERSION,
     read_state,
     refuse_existing_split_files_without_state,

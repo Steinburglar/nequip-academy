@@ -1,6 +1,6 @@
 # Sample Unit Tests
 
-Tests for `nequip_extension_template.sample`.
+Tests for `nequip_academy.sample`.
 
 Expected files here include:
 

@@ -1,4 +1,4 @@
-"""Data modules for TuneandDistill."""
+"""Data modules for NequipAcademy."""
 
 from .datamodule import DistillationDataModule
 

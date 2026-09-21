@@ -32,7 +32,7 @@ from typing import List, Optional
 
 import torch
 
-from nequip_extension_template.data.paths import SPLITS
+from nequip_academy.data.paths import SPLITS
 
 DEFAULT_SPLIT = {"train": 0.8, "val": 0.1, "test": 0.1}
 

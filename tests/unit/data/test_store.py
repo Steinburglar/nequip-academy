@@ -9,10 +9,10 @@ import pytest
 from ase import Atoms
 from ase.io import write
 
-from nequip_extension_template.data.paths import SPLITS
-from nequip_extension_template.data.state import STATE_FILE, STATE_VERSION
-from nequip_extension_template.data.store import SampleStore
-from nequip_extension_template.sample.generator import Generator
+from nequip_academy.data.paths import SPLITS
+from nequip_academy.data.state import STATE_FILE, STATE_VERSION
+from nequip_academy.data.store import SampleStore
+from nequip_academy.sample.generator import Generator
 
 
 def frame(x: float = 0.0) -> Atoms:
@@ -128,7 +128,7 @@ def test_store_reads_a_record_the_generator_wrote(tmp_path):
 
     record = SampleStore(dataset_path).load_record()
     assert record["provenance"]["generator_class"] == (
-        "nequip_extension_template.sample.generator.Generator"
+        "nequip_academy.sample.generator.Generator"
     )
     assert record["provenance"]["config"] == generator.generation_config
     assert "base_frames" in record["provenance"]
@@ -147,7 +147,7 @@ def test_generator_accepts_a_record_the_store_wrote(tmp_path):
     fresh = bare_generator(tmp_path, dataset_path)
     record = fresh.store.load_record()
     assert record["provenance"]["generator_class"] == (
-        "nequip_extension_template.sample.generator.Generator"
+        "nequip_academy.sample.generator.Generator"
     )
     assert record["contents"]["n_written"] == 1
     # the settings are unchanged, so this is the case that must NOT refuse

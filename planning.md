@@ -1,4 +1,4 @@
-# TuneandDistill — design record
+# NequipAcademy — design record
 
 The **why** behind the code, plus every fact measured about someone else's code.
 On-demand reading, not per-turn context — `CLAUDE.md` holds the state an agent needs every
@@ -270,7 +270,7 @@ installed lightning).
 ### Repository layout policy
 Keep four different kinds of files separate:
 
-- `nequip_extension_template/` is package code.
+- `nequip_academy/` is package code.
 - `examples/` is shipped runnable example configuration.
 - `tests/` is automated verification, ideally split by the source module or CLI surface under test.
 - `docs/tutorial/` is shipped tutorial material.
@@ -558,8 +558,8 @@ Ours:
 against. User tests in Colab.
 
 Colab link needs the repo PUBLIC and pushed to `main`:
-`colab.research.google.com/github/Steinburglar/TuneandDistill/blob/main/docs/tutorial/NequIP_Distill_Tutorial.ipynb`.
-Two URLs hardcode `Steinburglar/TuneandDistill@main` (the `pip install git+` cell and the `wget` of
+`colab.research.google.com/github/Steinburglar/NequipAcademy/blob/main/docs/tutorial/NequIP_Distill_Tutorial.ipynb`.
+Two URLs hardcode `Steinburglar/NequipAcademy@main` (the `pip install git+` cell and the `wget` of
 `distill.yaml`) — both live in `distill_section.md`; change there and regenerate.
 
 **Validated on GPU (job 42612714, `gpu_test`, 8m06s, 2026-08-28)**: the packaged-teacher config
@@ -697,7 +697,7 @@ progress=...)` injects `contents` itself and does one `torch.save` + `os.replace
 ### 11.3 The three components
 
 ```text
-nequip_extension_template/
+nequip_academy/
   data/
     paths.py        SPLITS, split_file()                    [exists]
     state.py        record I/O, diff mechanism, truncation  [exists, needs one fix — 11.8]
@@ -809,7 +809,7 @@ nequip-train -cp /abs/path/to/configs -cn distill
 run: [train, val, test]
 
 data:
-  _target_: nequip_extension_template.data.DistillationDataModule
+  _target_: nequip_academy.data.DistillationDataModule
   _recursive_: false
   seed: 1
   dataset_path: /scratch/me/cdp_distill_samples
@@ -822,7 +822,7 @@ data:
     chemical_species_to_atom_type_map: true
 
   generation:
-    _target_: nequip_extension_template.sample.RattleGenerator
+    _target_: nequip_academy.sample.RattleGenerator
     base_frames: /scratch/me/base_frames.xyz
     split: {train: 0.8, val: 0.1, test: 0.1}
     split_policy: scattered
@@ -1079,11 +1079,11 @@ the measured GPU nondeterminism and the tolerance-based check that replaces it t
   from the tracked example only in path locality, and is launched from `sandbox/out`:
 
 ```bash
-cd /n/home12/lsteinberger/code/TuneandDistill/sandbox/out
+cd /n/home12/lsteinberger/code/NequipAcademy/sandbox/out
 PATH="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311/bin:$PATH" \
 CONDA_PREFIX="/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311" \
 HYDRA_FULL_ERROR=1 \
-nequip-train -cp /n/home12/lsteinberger/code/TuneandDistill/sandbox/configs \
+nequip-train -cp /n/home12/lsteinberger/code/NequipAcademy/sandbox/configs \
              -cn rattle_train_datamodule_local
 ```
 

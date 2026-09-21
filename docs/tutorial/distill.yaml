@@ -63,7 +63,7 @@ sample_path: ./distill_dataset
 sampler:
   # `RattleSampler` deforms and rattles static structures. (`MDSampler` runs
   # teacher-driven molecular dynamics instead; same slot, different `_target_`.)
-  _target_: nequip_extension_template.sample.RattleSampler
+  _target_: nequip_academy.sample.RattleSampler
 
   # -- the teacher ---------------------------------------------------------
   # Any ASE calculator works here. We use the fine-tuned model from the

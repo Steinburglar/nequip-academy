@@ -1,6 +1,6 @@
 """Durable state helpers for generated distillation datasets.
 
-Free functions behind :class:`~nequip_extension_template.data.store.SampleStore`.
+Free functions behind :class:`~nequip_academy.data.store.SampleStore`.
 Nothing here knows what a structure is: this layer deals in paths, bytes and plain
 dicts, and anything that must be loaded or hashed to be compared is reduced to a value
 by the generator that owns it before it gets here.
@@ -13,7 +13,7 @@ from typing import Optional, Union
 
 import torch
 
-from nequip_extension_template.data.paths import SPLITS, split_file
+from nequip_academy.data.paths import SPLITS, split_file
 
 logger = logging.getLogger(__name__)
 

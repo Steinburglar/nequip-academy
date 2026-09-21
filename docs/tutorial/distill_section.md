@@ -33,7 +33,7 @@ in one command.
 
 ```python
 # @title Installing nequip-distill
-!pip install --quiet git+https://github.com/Steinburglar/TuneandDistill.git
+!pip install --quiet git+https://github.com/Steinburglar/NequipAcademy.git
 ```
 
 <!-- TODO: repo private; make public or use a token-authenticated clone. -->
@@ -43,7 +43,7 @@ in one command.
 ```python
 # @title Packaging the fine-tuned model as our teacher
 !nequip-package build /content/results_ft/best.ckpt /content/teacher.nequip.zip
-!wget --quiet https://raw.githubusercontent.com/Steinburglar/TuneandDistill/main/docs/tutorial/distill.yaml
+!wget --quiet https://raw.githubusercontent.com/Steinburglar/NequipAcademy/main/docs/tutorial/distill.yaml
 ```
 
 ## [markdown]
@@ -68,7 +68,7 @@ them:
 
 ```yaml
 sampler:
-  _target_: nequip_extension_template.sample.RattleSampler
+  _target_: nequip_academy.sample.RattleSampler
   calculator:
     _target_: nequip.integrations.ase.NequIPCalculator._from_saved_model
     model_path: ./teacher.nequip.zip

@@ -3,9 +3,9 @@ import pytest
 from ase import Atoms
 from ase.io import read, write
 
-from nequip_extension_template.data.paths import SPLITS
-from nequip_extension_template.data.state import STATE_FILE
-from nequip_extension_template.sample.generator import Generator, frames_digest
+from nequip_academy.data.paths import SPLITS
+from nequip_academy.data.state import STATE_FILE
+from nequip_academy.sample.generator import Generator, frames_digest
 
 
 class ToyGenerator(Generator):

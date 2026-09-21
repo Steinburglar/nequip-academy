@@ -1,4 +1,4 @@
-# TuneandDistill — Agent Context
+# NequipAcademy — Agent Context
 
 Durable state only. **Design rationale, measured facts about nequip/lightning/ASE, rejected
 designs, open problems and the ordered next steps all live in `planning.md`** — read it on
@@ -35,7 +35,7 @@ scratch in small approved steps.
 
 ## Code map
 
-`nequip_extension_template/sample/`
+`nequip_academy/sample/`
 - `generator.py` (~330) — base `Generator`. Owns a `SampleStore` (`self.store`) and delegates ALL
   file/record mechanics to it; holds only calculator, `base_frames`, `state_interval`,
   `n_resumed`, `generation_config`. `dataset_path`/`n_written`/`split_counts` are read-only
@@ -62,7 +62,7 @@ scratch in small approved steps.
   `policy` = `"scattered"` (torch shuffle) or `"blocked"` (contiguous train→val→test ranges).
 - `__init__.py` — exports `Generator`, `RattleGenerator`, `MDGenerator`.
 
-`nequip_extension_template/data/`
+`nequip_academy/data/`
 - `paths.py` — `SPLITS`, `split_file(dataset_path, split)`. **The only home for these** —
   `sample/` no longer re-exports them.
 - `state.py` — free fns behind the store: `STATE_FILE`/`STATE_VERSION`, `flatten`,
@@ -159,8 +159,8 @@ nondeterminism and the tolerance-based check to use instead.
   nothing:
 ```bash
 grep -rn "import nequip\|from nequip\b\|import hydra\|from hydra\|import lightning\|from lightning\|omegaconf" \
-  nequip_extension_template/sample/ nequip_extension_template/data/store.py \
-  nequip_extension_template/data/state.py nequip_extension_template/data/paths.py
+  nequip_academy/sample/ nequip_academy/data/store.py \
+  nequip_academy/data/state.py nequip_academy/data/paths.py
 ```
 
 - `tests/e2e/test_datamodule_e2e.py` — ordinary pytest tests (no case registry), marked `e2e` and
@@ -195,8 +195,6 @@ paths. `testartifacts/` and `configs/` have been retired. **No MD example any mo
 
 ## Known debt (the shippable-repo cleanup list)
 
-- Package still named `nequip_extension_template`. Rename touches `pyproject.toml` (`name`,
-  `packages.find.include`, entry-points, `version.attr`) + every intra-package import.
 - `pyproject.toml` placeholder: `description = "TODO"`. MIT `LICENSE` and `authors` are done.
 - `README.md` is a scaffold with empty sections — **user writes the prose, do not fill it in.**
 - `README.md` and `docs/tutorial/` still describe the deleted `nequip-distill` CLI. The tutorial

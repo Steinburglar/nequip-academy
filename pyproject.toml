@@ -3,7 +3,7 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nequip-extension-template"
+name = "nequip-academy"
 dynamic = ["version"]
 description = "TODO"
 readme = "README.md"
@@ -27,10 +27,10 @@ dependencies = [
 test = ["pytest"]
 
 [tool.setuptools.packages.find]
-include = ["nequip-extension-template", "nequip_extension_template", "nequip_extension_template.*"]
+include = ["nequip_academy", "nequip_academy.*"]
 
 [tool.setuptools.dynamic]
-version = {attr = "nequip_extension_template._version.__version__"}
+version = {attr = "nequip_academy._version.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -66,4 +66,4 @@ quote-style = "double"
 indent-style = "space"
 
 [project.entry-points."nequip.extension"]
-init_always = "nequip_extension_template"
+init_always = "nequip_academy"

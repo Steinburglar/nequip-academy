@@ -74,7 +74,7 @@ def teacher_section() -> dict:
 
 def generation_section() -> dict:
     return {
-        "_target_": "nequip_extension_template.sample.RattleGenerator",
+        "_target_": "nequip_academy.sample.RattleGenerator",
         "base_frames": "base_frames.xyz",
         "split": {"train": 0.8, "val": 0.1, "test": 0.1},
         "split_policy": "scattered",
@@ -192,7 +192,7 @@ def config(dataset_path: str, **extra) -> dict:
     cfg["run"] = ["train", "val", "test"]
     cfg["data"].update(
         {
-            "_target_": "nequip_extension_template.data.DistillationDataModule",
+            "_target_": "nequip_academy.data.DistillationDataModule",
             "_recursive_": False,
             "dataset_path": dataset_path,
             "teacher": teacher_section(),
