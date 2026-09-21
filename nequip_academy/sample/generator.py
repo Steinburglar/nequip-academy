@@ -227,7 +227,7 @@ class Generator:
         below is the ordinary case and uses the shared differ.
 
         No setting is exempt yet -- classification into immutable and mutable comes
-        later (`planning.md` 11.10).
+        later (see CLAUDE.md's backlog).
 
         `n_written` comes from the record rather than from the store, because this
         runs before the store has been reconciled; the count is only there to say how

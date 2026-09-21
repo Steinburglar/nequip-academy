@@ -23,7 +23,7 @@
 ## Status
 
 <!-- Be honest about maturity here. What is validated, what is scaffolding, what is
-     not implemented. See `planning.md` §8/§9 for the current list. -->
+     not implemented. See CLAUDE.md's backlog for the current list. -->
 Current status is messing, to be cleaned before any shipment. 
 
 ## Installation
@@ -100,7 +100,7 @@ against the decorated function's module. `nequip-train` behaves the same way.
 <!-- One short subsection per generator, with its knobs:
        - RattleGenerator — strain + per-atom rattle around each base frame
        - MDGenerator — Langevin NVT trajectory from one base frame
-     Say plainly which one is production-ready. `planning.md` §7 has the rattle
+     Say plainly which one is production-ready. CLAUDE.md's rattle gotchas have the
      algorithm and the magnitude lesson worth repeating to users. -->
 
 
@@ -108,6 +108,7 @@ against the decorated function's module. `nequip-train` behaves the same way.
 
 <!-- Point at `docs/tutorial/` (the Colab notebook) and at the example configs.
      A one-line description of each is enough. -->
+
 
 
 ## Contributing
@@ -127,10 +128,3 @@ against the decorated function's module. `nequip-train` behaves the same way.
      recommends MIT, Apache 2.0, or BSD 3-Clause. Pick one, add the file, and note
      it here. -->
 
-
-## Join the NequIP Community
-
-Extension package developers are invited to join the NequIP community chat server,
-hosted on [Zulip](https://zulip.com/). Zulip is organized a little differently from
-Slack or Discord — please review [their introduction](https://zulip.com/help/introduction-to-topics)
-before posting. [Fill out the interest form here](https://forms.gle/mEuonVCHdsgTtLXy7).

@@ -2,9 +2,8 @@
 #   DEPRECATED -- DOES NOT RUN
 # ==========================================================================
 # This config drives `nequip-distill`, a CLI deleted on 2026-09-18. The package
-# now contributes a `data:` datamodule to plain `nequip-train`; see planning.md
-# section 11 and examples/rattle_train_datamodule.yaml. Port this once the
-# refactor settles.
+# now contributes a `data:` datamodule to plain `nequip-train`; see CLAUDE.md and
+# examples/rattle_train_datamodule.yaml. Port this once the refactor settles.
 # ==========================================================================
 
 # ==========================================================================

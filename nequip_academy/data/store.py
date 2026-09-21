@@ -25,7 +25,7 @@ generator's ``state()`` would have to produce them, which would force procedure 
 to know about byte offsets. They are equally not provenance -- provenance is fixed for
 the dataset's whole life, while contents change at every checkpoint.
 
-See ``planning.md`` section 11 for the full picture.
+See CLAUDE.md's code map for the full picture.
 """
 
 import hashlib

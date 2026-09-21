@@ -156,7 +156,8 @@ class DistillationDataModule(ASEDataModule):
 
         Two halves, deliberately. The first is hydra plumbing, specific to running
         under `nequip-train`. The second names only local variables, so it is the
-        part a standalone generation script would keep (`planning.md` 11.1a).
+        part a standalone generation script would keep (the portability invariant
+        in CLAUDE.md).
         """
         # --- adapter: hydra config -> objects. A script replaces this half with
         #     ordinary construction, so everything touching `self` belongs here.
