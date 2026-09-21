@@ -7,11 +7,11 @@
   renamed or the entry point moves.
 -->
 
-# TuneandDistill
+# NequIP Academy
 
 <!-- One or two sentences: what this package is, and the one thing it does.
      Name the CLI (`nequip-distill`) here. Say it is a `nequip` extension package. -->
-     THIS is a `nequip` extension package that provides a simple 'nequip-distill' CLI for distilling a small "student" nequip model from a teacher model, which mimics the `nequip-train` CLI in its invocation and config structure.
+     THIS is a `nequip` extension package that provides easy distillation of large, accurate MLIP's into smaller, faster Nequip models within the nequip-train framework.
 
 <!-- Then a short paragraph on the idea: a trained teacher model labels structures
         cheaply, and a small student model is trained on those labels. The student
@@ -31,8 +31,8 @@ Current status is messing, to be cleaned before any shipment.
 Requires [`nequip`](https://github.com/mir-group/nequip) `>=0.17.1`.
 
 ```bash
-git clone https://github.com/Steinburglar/TuneandDistill.git
-cd TuneandDistill
+git clone https://github.com/Steinburglar/nequip-academy.git
+cd nequip-academy
 pip install -e .
 ```
 
@@ -53,16 +53,39 @@ pip install -e .
 
 ## Usage
 
+'nequistill' works by providing a new DataModule class that generates and labels a "synthetic" dataset with a provided teacher model. To use it, simply write a normal nequip config, but with the DistillDataModule as the data target. The Datamodule requires some additional parameters to specify the teacher model, location of the base frames, and the sampling procedure (see example below). A full example config is provided in `configs/distill_example.yaml`. 
+
+
+
+<!-- copy here over the data section of the example config, with brief explanation of the fields in comments -->
+```yaml
+data:
+  # The path to the teacher model
+  teacher_model: /path/to/teacher_model.pth
+  # The path to the base frames
+  base_frames: /path/to/base_frames/
+  # The sampling procedure
+  sampling:
+    # The type of generator to use
+    type: RattleGenerator
+    # The parameters for the generator
+    params:
+      # The magnitude of the rattle
+      rattle_magnitude: 0.1
+      # The number of samples to generate
+      num_samples: 1000
+```
+
+Once your config is ready, you can run the distillation process with the following command:
+
 ```bash
-nequip-distill -cp /absolute/path/to/config/dir -cn config_name
+nequip-train -cp /absolute/path/to/config/dir -cn config_name
 ```
 
 The `-cp` path must be **absolute** — hydra resolves a relative `--config-path`
 against the decorated function's module. `nequip-train` behaves the same way.
 
-<!-- Then: a minimal annotated config, and an explanation of the `run:` line
-     (`[sample, train, val, test]` and the useful subsets). See `planning.md` D8
-     for the table of what each combination means. -->
+
 
 
 ### Configuration
