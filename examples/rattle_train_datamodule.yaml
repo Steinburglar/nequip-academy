@@ -20,6 +20,10 @@ data:
   _recursive_: false
   seed: ${seed}
 
+  # Held-out set with GROUND-TRUTH labels, not teacher labels: this is what the
+  # reported test error should mean. Generation makes train and val only.
+  test_file_path: sandbox/inputs/dft_test.xyz
+
   dataset_path: sandbox/out/rattle_train_datamodule_dataset
   state_interval: 50
 
@@ -32,7 +36,7 @@ data:
   generation:
     _target_: nequip_academy.sample.RattleGenerator
     base_frames: sandbox/inputs/base_frames.xyz
-    split: {train: 0.8, val: 0.1, test: 0.1}
+    split: {train: 0.9, val: 0.1}
     split_policy: scattered
     split_seed: 0
     strain_magnitudes: [-0.05, 0.0, 0.05]

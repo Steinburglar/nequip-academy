@@ -10,7 +10,8 @@ from hydra.utils import instantiate
 from nequip.data.datamodule import ASEDataModule
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from nequip_academy.data.paths import SPLITS, split_file
+from nequip_academy.data.paths import split_file
+from nequip_academy.sample.split import DEFAULT_SPLIT
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,43 @@ def _to_container(value: Any) -> Any:
     if isinstance(value, (DictConfig, ListConfig)):
         return OmegaConf.to_container(value, resolve=True)
     return copy.deepcopy(value)
+
+
+def _as_path_list(value: Any) -> list:
+    """Normalize a single path or a list of paths to a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, (str, Path)):
+        return [str(value)]
+    return [str(item) for item in value]
+
+
+def _generated_test_fraction(generation_config: Any) -> float:
+    """How much of the generated dataset the configured split gives to ``test``.
+
+    Read in ``__init__``, before the full validation in :meth:`_generation_config`, so
+    it stays tolerant of a config that turns out to be malformed -- that error belongs
+    to the later check, not this one.
+    """
+    if not isinstance(generation_config, dict):
+        return 0.0
+    split = generation_config.get("split") or DEFAULT_SPLIT
+    if not isinstance(split, dict):
+        return 0.0
+    try:
+        return float(split.get("test", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+TEACHER_LABELED_TEST_WARNING = (
+    "This run's test split is TEACHER-LABELED.\n"
+    "  Its metrics measure how closely the student reproduces the teacher, NOT how "
+    "accurate the student is.\n"
+    "  Do not report them as the student's test error. For that, label a held-out set "
+    "with your ground-truth method\n"
+    "  and pass it as `data.test_file_path`, with the generated test fraction at 0."
+)
 
 
 class DistillationDataModule(ASEDataModule):
@@ -45,6 +83,19 @@ class DistillationDataModule(ASEDataModule):
         also accepted when ``teacher`` is omitted.
     state_interval
         Forwarded to the generator as its checkpoint cadence.
+    test_file_path
+        Path (or list of paths) to an externally labeled held-out set, exactly as any
+        other ``ASEDataModule`` takes it. This is the intended way to get a test set:
+        generation makes train and val only, and the test set carries whatever labels
+        the user considers ground truth. It need not live under ``dataset_path``, it is
+        never written to, and it goes through the same ``transforms``, ``key_mapping``
+        and ``include_keys`` as the generated files. Relative paths resolve against the
+        launch directory, because hydra does not chdir.
+    teacher_labeled_test
+        Opt in to a generated, teacher-labeled test split. Off by default, and required
+        whenever ``generation.split`` gives ``test`` a nonzero share, because such a
+        test set measures agreement with the teacher rather than accuracy. Logs a
+        warning whenever it is on.
     """
 
     def __init__(
@@ -54,6 +105,8 @@ class DistillationDataModule(ASEDataModule):
         generation: Union[dict, DictConfig],
         teacher: Optional[Any] = None,
         state_interval: int = 1,
+        test_file_path: Optional[Union[str, Path, list]] = None,
+        teacher_labeled_test: bool = False,
         transforms: list = [],
         ase_args: dict = {},
         include_keys: Optional[list] = [],
@@ -71,11 +124,14 @@ class DistillationDataModule(ASEDataModule):
                 "`DistillationDataModule` writes pre-split train/val/test files; "
                 "do not also set `data.split_dataset`."
             )
-        if any(f"{split}_file_path" in kwargs for split in SPLITS):
+        owned = [s for s in ("train", "val") if f"{s}_file_path" in kwargs]
+        if owned:
             raise ValueError(
-                "`DistillationDataModule` owns train/val/test file paths through "
-                "`dataset_path`; do not set `data.train_file_path`, "
-                "`data.val_file_path`, or `data.test_file_path`."
+                "`DistillationDataModule` generates the training and validation sets, "
+                f"so it owns their paths through `dataset_path`; do not set "
+                f"{', '.join(f'`data.{s}_file_path`' for s in owned)}. "
+                "`data.test_file_path` IS accepted -- that is how you supply an "
+                "externally labeled test set."
             )
 
         self.dataset_path = Path(dataset_path)
@@ -87,15 +143,52 @@ class DistillationDataModule(ASEDataModule):
                 f"`state_interval` must be at least 1, got {state_interval!r}"
             )
 
-        split_paths = {
-            split: str(split_file(self.dataset_path, split)) for split in SPLITS
-        }
+        external_test = _as_path_list(test_file_path)
+        generated_test_fraction = _generated_test_fraction(self.generation_config)
+        self.teacher_labeled_test = bool(teacher_labeled_test)
+
+        if external_test and generated_test_fraction > 0:
+            raise ValueError(
+                f"`data.test_file_path` supplies a test set, but the generation split "
+                f"also allocates test={generated_test_fraction} to teacher-labeled "
+                "data. Pick one: drop the test share from `generation.split` (giving "
+                "it to train or val), or drop `data.test_file_path`."
+            )
+        if generated_test_fraction > 0 and not self.teacher_labeled_test:
+            raise ValueError(
+                f"`generation.split` allocates test={generated_test_fraction}, which "
+                "would make the test set TEACHER-LABELED. Its metrics would measure "
+                "agreement with the teacher, not accuracy, and reporting them as the "
+                "student's test error is wrong. Either pass a ground-truth-labeled "
+                "held-out set as `data.test_file_path` and zero the test share, or, if "
+                "you really do want to measure distillation fidelity, set "
+                "`data.teacher_labeled_test: true`."
+            )
+        if self.teacher_labeled_test and generated_test_fraction <= 0:
+            raise ValueError(
+                "`data.teacher_labeled_test` is set but `generation.split` allocates "
+                "no test share, so there is no teacher-labeled test set to opt into."
+            )
+        missing = [path for path in external_test if not Path(path).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"`data.test_file_path` does not exist: {missing}. Paths resolve "
+                "against the launch directory, because hydra does not chdir."
+            )
+
+        if external_test:
+            test_paths = external_test
+        elif generated_test_fraction > 0:
+            test_paths = [str(split_file(self.dataset_path, "test"))]
+            logger.warning(TEACHER_LABELED_TEST_WARNING)
+        else:
+            test_paths = []
 
         super().__init__(
             seed=seed,
-            train_file_path=[split_paths["train"]],
-            val_file_path=[split_paths["val"]],
-            test_file_path=[split_paths["test"]],
+            train_file_path=[str(split_file(self.dataset_path, "train"))],
+            val_file_path=[str(split_file(self.dataset_path, "val"))],
+            test_file_path=test_paths,
             predict_file_path=[],
             split_dataset=[],
             transforms=transforms,
@@ -176,6 +269,8 @@ class DistillationDataModule(ASEDataModule):
             f"{generator.n_resumed} already present"
         )
         generator.release_calculator()
+        if self.teacher_labeled_test:
+            logger.warning(TEACHER_LABELED_TEST_WARNING)
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

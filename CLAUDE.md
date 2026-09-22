@@ -103,7 +103,9 @@ grep -rn "import nequip\|from nequip\b\|import hydra\|from hydra\|import lightni
 | | State |
 |---|---|
 | rattle sampling | works, GPU-validated, deterministic per structure |
-| 3-file split output | works; splits frozen at generation |
+| generated train/val + external test set | works, e2e-covered; the default and only unguarded shape |
+| generated teacher-labeled test split | REFUSED unless `data.teacher_labeled_test: true`; warns loudly when on |
+| split output | train/val generated, `test.extxyz` written only under the opt-in |
 | student training via `nequip-train` | works, e2e-covered; GPU-validated on the old CLI path |
 | rattle resume | works (truncate to recorded offset, continue) |
 | MD sampling | runs, but scaffolding |
@@ -168,16 +170,21 @@ NOT a valid criterion whenever the teacher runs on GPU** — see the determinism
   `hydra.run.dir` is pinned per test so assertions can look inside it. 10 synthetic 32-atom fcc
   argon cells (fcc, NOT random positions — random points in a box overlap atoms and LJ energies
   explode); student = 1 layer, `l_max: 0`, `num_features: 8`, 2 epochs, `accelerator: cpu`.
+  The held-out test set is a separate `ground_truth_test.xyz` of 3 more argon cells, labelled with
+  the same LJ calculator — a poor scientific test set and a fine plumbing one.
   Covers: full pipeline, two students on one dataset byte-identical, **the no-teacher fast path**
   (a LennardJones subclass that touches a marker file when constructed — the teacher config is
   provenance, so breaking its `_target_` would trip the settings-changed refusal instead of
-  proving anything), `split_dataset` refusal, explicit `*_file_path` refusal, broken student
-  config refused before generation, checkpoint restart.
+  proving anything), `split_dataset` refusal, `train_file_path`/`val_file_path` refusal, broken
+  student config refused before generation, checkpoint restart, **the external test set driving
+  the test stage** (no `test.extxyz` written, `test0_epoch/*` in `metrics.csv`), the
+  teacher-labeled test split refused without the opt-in, and allowed with it.
 
 ## Examples And Local Artifacts
 
 ONE tracked example config: `examples/rattle_train_datamodule.yaml` — `run: [train, val, test]`,
-`data:` = `DistillationDataModule` with `_recursive_: false`, `teacher:` and `generation:`; student
+`data:` = `DistillationDataModule` with `_recursive_: false`, `teacher:`, `generation:`
+(`split: {train: 0.9, val: 0.1}`) and `test_file_path: sandbox/inputs/dft_test.xyz`; student
 = `EMALightningModule` + `NequIPGNNModel` (2 layers, `l_max: 1`, `num_features: [32, 16]`,
 `r_max: 6.0` — the CDP student arch from `../distillation/config/base.yaml`), CSVLogger,
 `ModelCheckpoint(dirpath=${hydra:runtime.output_dir}, filename=best, save_last=true)`, and NO
@@ -195,9 +202,13 @@ clear: runnable example configs → `examples/`, test inputs → `tests/fixtures
   (64 atoms).
 - `sandbox/inputs/teacher.nequip.pt2` — the segfaulting compiled one, kept as evidence only.
 - `sandbox/inputs/base_frames.xyz` — 10 CsH2PO4 frames (64 atoms, periodic), first 10 of a
-  200-frame REAL DFT subset. DFT energy/forces DISCARDED, the teacher relabels. 10 chosen so
-  0.8/0.1/0.1 apportions to 8/1/1. Named "base frames" not "seed frames" — collided with
-  `n200_seed1` naming AND with the RNG seed.
+  200-frame REAL DFT subset. DFT energy/forces DISCARDED, the teacher relabels. 0.9/0.1
+  apportions them 9/1. Named "base frames" not "seed frames" — collided with `n200_seed1` naming
+  AND with the RNG seed. **Triclinic**, not cubic.
+- `sandbox/inputs/dft_test.xyz` — 20 frames carved from the SAME subset, indices 10–29, so
+  disjoint from the base frames by construction. DFT energy/forces KEPT: this is the ground-truth
+  test set the example points at. Source:
+  `../distillation/results/CDP/dft_subset/n200_seed1.xyz`.
 - `sandbox/configs/rattle_train_datamodule_local.yaml` (untracked) — same semantics as the tracked
   example, paths relative to `sandbox/out`. Run from there:
   `cd sandbox/out && nequip-train -cp $PWD/../configs -cn rattle_train_datamodule_local`.
@@ -206,8 +217,17 @@ clear: runnable example configs → `examples/`, test inputs → `tests/fixtures
 
 Everything else is readable from the code. These are the ones whose *reason* is not.
 
-- **Splits frozen at generation, 3 files, never recomputed at train time.** This is what stops a
-  grown dataset from silently moving val/test frames into train.
+- **Splits frozen at generation, never recomputed at train time.** This is what stops a grown
+  dataset from silently moving val/test frames into train.
+- **The test set is external by default and the teacher never labels it.** "Test error" has to
+  mean error against the user's ground truth, or a reader will quote a teacher-agreement number as
+  if it were accuracy. So `DEFAULT_SPLIT` is `{train: 0.9, val: 0.1}`, `data.test_file_path` is
+  accepted like on any `ASEDataModule` (train/val paths are still owned by `dataset_path`), and a
+  nonzero generated `test` share is REFUSED unless `data.teacher_labeled_test: true` is also set —
+  a distillation-fidelity number is legitimate, it just must not be reachable by accident. The
+  opt-in warns at construction and again after generation. Teacher-vs-ground-truth, the floor that
+  makes the student's number interpretable, is post-hoc work; nothing loads the teacher at test
+  time.
 - **Split unit is per-procedure.** Rattle splits per BASE FRAME (rattles of one frame are
   near-duplicates, must stay together); MD per snapshot. Defaults differ on purpose: MD
   `"blocked"` (time-ordered, a contiguous tail stays honest if `sample_interval`
@@ -262,6 +282,21 @@ Everything else is readable from the code. These are the ones whose *reason* is 
 - An incremental hash carried across appends to make `save_record` linear — optimising for a size
   nobody runs.
 - Aliases for the old `Sampler`/`sample_path` names — unreleased package, no external importers.
+- **Two test dataloaders** (`test0` external ground truth, `test1` generated teacher-labelled).
+  Works natively — `ASEDataModule` takes a list — but the sets are named positionally, so a reader
+  gets two numbers and no way to tell which is which, which is the ambiguity the whole change
+  exists to remove.
+- **Teacher inference during the test stage**, via a callback or a "distillation mode" the run
+  detects. Teacher-vs-truth is a constant over (teacher, test set), so it does not belong in a
+  per-epoch metrics stream; surfacing it there would need custom field registration, ASE reader
+  changes and a metric that ignores the model output. Implicit mode detection would also make
+  reported metrics mean different things depending on surrounding config.
+- **A "pre" script that writes teacher labels onto the test set.** Once teacher labels stop
+  flowing into the run, its only job is computing teacher-vs-truth — which IS the post-hoc tool.
+  Two scripts, one computation. (Deferred rather than rejected: carrying teacher labels through
+  the pipeline for side-by-side test output. Revisit only if reading two places annoys in
+  practice; teacher columns would then need clearly non-standard names so such a file wandering
+  into `train_file_path` fails loudly.)
 
 ## Measured facts — nequip / lightning / hydra
 
@@ -325,9 +360,12 @@ Env: nequip **0.19.1**, lightning 2.6.1, hydra 1.3.2, torch 2.11.0+cu128. `pypro
   plus `n_random_strain_samples` random anisotropic strains, each followed by a per-atom rattle
   bounded by `max_displacement_ang`. Ordering is variant-major: every base frame gets variant 0
   before any gets variant 1.
-- **LATENT BUG, unconfirmed impact — ASE stores lattice vectors as ROWS.** Straining should be
-  `cell @ F.T`; `rattle.py` does `F @ cell`. Identical for a CUBIC cell (everything used so far is
-  cubic), diverges for hexagonal/triclinic. Fix before any non-cubic base frame.
+- **ASE stores lattice vectors as ROWS**, so deforming by `F` is `cell @ F.T`. `rattle.py` did
+  `F @ cell` until 2026-09-22. FIXED, with a regression test on a triclinic cell. The earlier note
+  that this was harmless "because everything used so far is cubic" was WRONG — the CsH2PO4 sandbox
+  frames are triclinic, and the two forms differ there by ~0.13 Å per lattice vector (same volume,
+  wrong shape). Isotropic variants were never affected; every `aniso:*` structure generated before
+  the fix was. Datasets generated before then must be regenerated, not resumed.
 - **`anisotropic_strain_magnitude` is decoupled from `strain_magnitudes` on purpose.** The derived
   form (`max(abs(strain_magnitudes))`) coupled two knobs: adding one isotropic scan point silently
   widened the anisotropic distribution with nothing to detect it. Default 0.05 preserves the old
@@ -353,21 +391,11 @@ Env: nequip **0.19.1**, lightning 2.6.1, hydra 1.3.2, torch 2.11.0+cu128. `pypro
 Unordered. Each line is the verdict; the argument is gone on purpose.
 
 **Science**
-- **Test error means error vs the TEACHER — wrong default.** SETTLED (user, 2026-09-21): one
-  DFT-labelled test set supplied by the user; generator makes train+val only (`test: 0.0`);
-  implement by relaxing the datamodule's explicit-`*_file_path` refusal for `test` only. No
-  teacher inference at test time (the teacher still labels train/val in `prepare_data()`). All
-  teacher comparison is post-hoc — student numbers are already in `metrics.csv`, so the tool only
-  evaluates the teacher. Report teacher-vs-DFT as the floor; student-vs-DFT alone can't separate
-  "distillation failed" from "teacher was already bad here". *Rejected:* two test dataloaders
-  (works natively, but positional `test0`/`test1` naming is ambiguous to a reader); teacher
-  inference in the test stage (puts a student-independent constant into a per-epoch metrics
-  stream, and needs custom field registration + ASE reader changes + a metric that ignores the
-  model output); a "pre" script writing teacher labels (duplicates the post-hoc tool).
-  *Deferred:* carrying teacher labels through the pipeline for side-by-side test output — revisit
-  only if reading two places annoys in practice; teacher columns would need clearly non-standard
-  names so such a file wandering into `train_file_path` fails loudly.
-- **Post-hoc grading tool.** Teacher + one or more students + a labelled test file → table and a
+- **Post-hoc grading tool.** The remaining half of the test-error fix (the datamodule half landed
+  2026-09-22). Its job is teacher-vs-ground-truth, the floor that makes the student's number
+  interpretable — student-vs-truth alone can't separate "distillation failed" from "the teacher
+  was already bad here". Student numbers are already in `metrics.csv`, so the tool only evaluates
+  the teacher. Takes a teacher, one or more students and a labelled test file → table and a
   Pareto plot of accuracy vs inference time. NOT `nequip-distill` returning: no run stages, no
   hydra schema, no resume semantics. Timing must be honest — fixed batch size, warmup discarded,
   median over repeats with spread, one GPU, compiled/uncompiled stated. Parameter count is not a
@@ -377,7 +405,6 @@ Unordered. Each line is the verdict; the argument is gone on purpose.
   external DFT set can be dominated by a constant offset. Forces are immune. Decide raw vs
   per-atom vs shift-corrected. Doesn't bite the sandbox teacher (same DFT); bites a fine-tuned
   foundation model, which is the real use case.
-- **Strain bug** — `F @ cell` should be `cell @ F.T`. Silent on cubic cells.
 - **MD is unmeasured.** `sample_interval` decorrelation is an assumption (if false, scattered
   splitting leaks and nothing detects it); `friction_per_fs=0.01` and the 5-step equilibration are
   placeholders, not recommendations.

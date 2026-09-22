@@ -26,13 +26,17 @@ import numpy as np
 import pytest
 import yaml
 from ase.build import bulk
-from ase.io import write
+from ase.calculators.lj import LennardJones
+from ase.calculators.singlepoint import SinglePointCalculator
+from ase.io import read, write
 
 N_BASE_FRAMES = 10
 # 3 isotropic strains + 1 random anisotropic one per base frame
 N_VARIANTS = 4
 N_STRUCTURES = N_BASE_FRAMES * N_VARIANTS
+N_TEST_FRAMES = 3
 SPLITS = ("train", "val", "test")
+GENERATED_SPLITS = ("train", "val")
 
 pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
@@ -56,10 +60,34 @@ def make_base_frames(path: Path) -> None:
     write(str(path), frames)
 
 
+def make_test_set(path: Path) -> None:
+    """A held-out, already-labeled test set, standing in for a DFT one.
+
+    Labeled here with the same Lennard-Jones calculator that plays the teacher, which
+    makes it a poor scientific test set and a perfectly good plumbing one: what is
+    under test is that an externally supplied file drives the test stage, not what the
+    numbers are. Structures are distinct from the base frames.
+    """
+    generator = np.random.default_rng(1)
+    frames = []
+    for _ in range(N_TEST_FRAMES):
+        atoms = bulk("Ar", "fcc", a=5.26, cubic=True) * (2, 2, 2)
+        atoms.positions += generator.normal(0.0, 0.05, atoms.positions.shape)
+        atoms.calc = LennardJones(sigma=3.4, epsilon=0.0104, rc=5.0)
+        atoms.calc = SinglePointCalculator(
+            atoms,
+            energy=atoms.get_potential_energy(),
+            forces=atoms.get_forces(),
+        )
+        frames.append(atoms)
+    write(str(path), frames)
+
+
 @pytest.fixture
 def work(tmp_path: Path) -> Path:
-    """A scratch directory with the base frames already in it."""
+    """A scratch directory with the base frames and the held-out test set in it."""
     make_base_frames(tmp_path / "base_frames.xyz")
+    make_test_set(tmp_path / "ground_truth_test.xyz")
     return tmp_path
 
 
@@ -76,7 +104,7 @@ def generation_section() -> dict:
     return {
         "_target_": "nequip_academy.sample.RattleGenerator",
         "base_frames": "base_frames.xyz",
-        "split": {"train": 0.8, "val": 0.1, "test": 0.1},
+        "split": {"train": 0.9, "val": 0.1},
         "split_policy": "scattered",
         "split_seed": 0,
         "strain_magnitudes": [-0.02, 0.0, 0.02],
@@ -197,6 +225,9 @@ def config(dataset_path: str, **extra) -> dict:
             "dataset_path": dataset_path,
             "teacher": teacher_section(),
             "generation": generation_section(),
+            # generation makes train+val; the test set is supplied, as it would be
+            # with real ground-truth labels
+            "test_file_path": "ground_truth_test.xyz",
         }
     )
     cfg.update(extra)
@@ -244,13 +275,17 @@ def digest(path: Path) -> str:
 
 
 def dataset_digests(dataset_path: Path) -> dict:
-    return {s: digest(dataset_path / f"{s}.extxyz") for s in SPLITS}
+    return {s: digest(dataset_path / f"{s}.extxyz") for s in GENERATED_SPLITS}
 
 
 def count_structures(dataset_path: Path) -> int:
     from ase.io import read
 
-    return sum(len(read(str(dataset_path / f"{s}.extxyz"), index=":")) for s in SPLITS)
+    return sum(
+        len(read(str(dataset_path / f"{s}.extxyz"), index=":"))
+        for s in SPLITS
+        if (dataset_path / f"{s}.extxyz").exists()
+    )
 
 
 def expect_failure(run: TrainRun, *fragments: str) -> None:
@@ -358,12 +393,16 @@ def test_split_dataset_refused(work: Path) -> None:
     )
 
 
-def test_explicit_file_paths_refused(work: Path) -> None:
-    """`dataset_path` owns the three split paths; setting them by hand is a mistake."""
+def test_generated_split_paths_refused(work: Path) -> None:
+    """Train and val are generated, so their paths are not the user's to set.
+
+    `test_file_path` is the deliberate exception, covered by
+    `test_external_test_set_drives_the_test_stage`.
+    """
     cfg = config("out/file_paths")
     cfg["data"]["train_file_path"] = ["nonexistent.xyz"]
     run = TrainRun(work, "file_paths", cfg)
-    expect_failure(run, "owns train/val/test file paths")
+    expect_failure(run, "owns their paths through `dataset_path`")
     assert not (work / "out/file_paths").exists()
 
 
@@ -392,3 +431,49 @@ def test_restart_from_checkpoint(work: Path) -> None:
     resumed = config("out/restart", ckpt_path=str(first.run_dir / "last.ckpt"))
     second = TrainRun(work, "restart_b", resumed)
     expect_success(second, "Continuing training with checkpoint file")
+
+
+def test_external_test_set_drives_the_test_stage(work: Path) -> None:
+    """The reported test error is measured against the supplied labels.
+
+    The generated dataset holds train and val only -- no `test.extxyz` is ever
+    written -- and the test stage reads the held-out file instead, so the number
+    `nequip-train` prints means "error against the labels the user brought", not
+    "agreement with the teacher".
+    """
+    run = TrainRun(work, "external_test", config("out/external_test"))
+    expect_success(run, "TEST RUN END")
+
+    dataset_path = work / "out/external_test"
+    assert not (dataset_path / "test.extxyz").exists()
+    assert count_structures(dataset_path) == N_STRUCTURES
+
+    metrics = next((run.run_dir).rglob("metrics.csv"))
+    header = metrics.read_text().splitlines()[0]
+    assert "test0_epoch/forces_mae" in header
+
+    # the held-out file is read, never written to
+    assert len(read(str(work / "ground_truth_test.xyz"), index=":")) == N_TEST_FRAMES
+
+
+def test_generated_test_split_refused_without_opt_in(work: Path) -> None:
+    """Asking for a teacher-labeled test split is possible, but never by accident."""
+    cfg = config("out/teacher_test")
+    cfg["data"].pop("test_file_path")
+    cfg["data"]["generation"]["split"] = {"train": 0.8, "val": 0.1, "test": 0.1}
+    run = TrainRun(work, "teacher_test", cfg)
+    expect_failure(run, "TEACHER-LABELED", "teacher_labeled_test")
+    assert not (work / "out/teacher_test").exists(), (
+        "nothing should be generated when the config is refused"
+    )
+
+
+def test_generated_test_split_allowed_when_opted_into(work: Path) -> None:
+    """With the opt-in the run proceeds, and says loudly what the metrics mean."""
+    cfg = config("out/opted_in")
+    cfg["data"].pop("test_file_path")
+    cfg["data"]["generation"]["split"] = {"train": 0.8, "val": 0.1, "test": 0.1}
+    cfg["data"]["teacher_labeled_test"] = True
+    run = TrainRun(work, "opted_in", cfg)
+    expect_success(run, "TEST RUN END", "TEACHER-LABELED")
+    assert (work / "out/opted_in/test.extxyz").exists()

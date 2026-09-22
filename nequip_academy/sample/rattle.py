@@ -205,7 +205,11 @@ class RattleGenerator(Generator):
             )
 
         atoms = self.base_frames[base_index].copy()
-        atoms.set_cell(strain_matrix @ atoms.cell[:], scale_atoms=True)
+        # ASE stores lattice vectors as ROWS, so deforming by F is `cell @ F.T`, not
+        # `F @ cell`. The two agree for an isotropic strain (a multiple of the
+        # identity) and for a cubic cell, and differ for anything else -- on the
+        # triclinic CsH2PO4 sandbox frames by ~0.13 Ang per lattice vector.
+        atoms.set_cell(atoms.cell[:] @ strain_matrix.T, scale_atoms=True)
         rattle_positions(rng, atoms, self.max_displacement_ang)
 
         labeled = self.label(atoms)

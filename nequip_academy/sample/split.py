@@ -34,7 +34,12 @@ import torch
 
 from nequip_academy.data.paths import SPLITS
 
-DEFAULT_SPLIT = {"train": 0.8, "val": 0.1, "test": 0.1}
+# No ``test`` share by default. A test set measured against teacher labels answers
+# "how well did the student copy the teacher", which is not what a reader assumes
+# "test error" means; the honest test set is an externally labelled one handed to the
+# datamodule as ``test_file_path``. Asking for a generated test split is still possible
+# but has to be opted into explicitly.
+DEFAULT_SPLIT = {"train": 0.9, "val": 0.1}
 
 
 def assign_splits(
@@ -60,6 +65,17 @@ def assign_splits(
             f"unknown split names {sorted(unknown)}, expected {list(SPLITS)}"
         )
     fractions = {s: float(fractions.get(s, 0.0)) for s in SPLITS}
+
+    # ``random_split`` demands fractions summing to 1 and says so only as "Sum of input
+    # lengths does not equal the length of the input dataset!", which names neither the
+    # fractions nor the shortfall. Zeroing out `test` without giving its share to
+    # another split is the easy way to land here.
+    total = sum(fractions.values())
+    if abs(total - 1.0) > 1e-9:
+        raise ValueError(
+            f"split fractions {fractions} sum to {total}, not 1. If you zeroed out a "
+            "split, give its share to one of the others."
+        )
 
     rng = torch.Generator().manual_seed(seed)
     subsets = torch.utils.data.random_split(

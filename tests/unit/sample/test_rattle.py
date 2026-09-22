@@ -8,7 +8,12 @@ from ase.calculators.lj import LennardJones
 from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io import read, write
 
-from nequip_academy.sample.rattle import RattleGenerator
+from nequip_academy.sample.rattle import (
+    RattleGenerator,
+    derive_seed,
+    frame_key,
+    random_anisotropic_strain_matrix,
+)
 from nequip_academy.data.paths import SPLITS
 
 pytestmark = pytest.mark.filterwarnings("ignore:Length of split at index .*:UserWarning")
@@ -181,3 +186,53 @@ def test_rattle_labels_output_with_teacher_and_drops_input_labels(
     np.testing.assert_allclose(
         labeled.get_forces(), LennardJones().get_forces(labeled)
     )
+
+
+def triclinic_frame() -> Atoms:
+    """Base frame with a cell that is not a multiple of the identity.
+
+    The row-vs-column strain convention is invisible on a cubic cell, so a
+    regression test for it has to use a genuinely triclinic one. These are the
+    lattice vectors of the CsH2PO4 frames in `sandbox/inputs/`, rounded.
+    """
+    return Atoms(
+        "Ar2",
+        positions=[[0.5, 0.5, 0.5], [2.3, 0.5, 0.5]],
+        cell=[[9.377, 0.0, 0.0], [1.673, 13.025, 0.0], [-0.976, -1.179, 9.053]],
+        pbc=True,
+    )
+
+
+def test_anisotropic_strain_uses_ase_row_vector_convention(tmp_path: Path) -> None:
+    """ASE keeps lattice vectors as rows, so deforming by F is `cell @ F.T`.
+
+    Doing `F @ cell` instead deforms the transpose. It is identical for an
+    isotropic strain and for a cubic cell, which is why this went unnoticed; on a
+    triclinic cell it silently produces a differently shaped box of the same volume.
+    """
+    base = tmp_path / "triclinic.xyz"
+    write(str(base), [triclinic_frame()])
+
+    generator = build_rattler(
+        tmp_path / "out",
+        base,
+        strain_magnitudes=[0.0],
+        n_random_strain_samples=1,
+        max_displacement_ang=0.0,
+    )
+    generator.generate()
+
+    strained = next(
+        f for f in generated_frames(tmp_path / "out") if f.info["variant"] == "aniso:0"
+    )
+
+    cell = np.asarray(triclinic_frame().cell)
+    rng = np.random.default_rng(
+        derive_seed(generator.seed, frame_key(triclinic_frame()), "aniso:0")
+    )
+    strain_matrix = random_anisotropic_strain_matrix(
+        rng, generator.anisotropic_strain_magnitude
+    )
+
+    assert np.allclose(np.asarray(strained.cell), cell @ strain_matrix.T)
+    assert not np.allclose(np.asarray(strained.cell), strain_matrix @ cell)

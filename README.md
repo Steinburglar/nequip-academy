@@ -108,6 +108,8 @@ against the decorated function's module. `nequip-train` behaves the same way.
 
 <!-- Point at `docs/tutorial/` (the Colab notebook) and at the example configs.
      A one-line description of each is enough. -->
+A [tutorial](docs/tutorial/) is provided in `docs/tutorial/` as a Colab notebook, and an example config is provided in `configs/distill_example.yaml`. The tutorial assumes the user is slready comfortable using vanilla nequip, which they can learn about through the excellent [nequip tutorial](https://colab.research.google.com/github/mir-group/nequip-tutorial/blob/main/NequIP_Tutorial.ipynb).
+
 
 
 
