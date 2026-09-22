@@ -282,6 +282,8 @@ Everything else is readable from the code. These are the ones whose *reason* is 
 - An incremental hash carried across appends to make `save_record` linear — optimising for a size
   nobody runs.
 - Aliases for the old `Sampler`/`sample_path` names — unreleased package, no external importers.
+- `ROADMAP.md` / a trash folder for retired docs (user) — minimalism over completeness; git is the
+  archive, don't build a second one.
 - **Two test dataloaders** (`test0` external ground truth, `test1` generated teacher-labelled).
   Works natively — `ASEDataModule` takes a list — but the sets are named positionally, so a reader
   gets two numbers and no way to tell which is which, which is the ambiguity the whole change
